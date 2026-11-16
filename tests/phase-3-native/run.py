@@ -193,18 +193,16 @@ def work(run, expected_host_bus_id, adapter):
         reader = threading.Thread(target=collect, daemon=True)
         reader.start()
 
-        def expect(event):
-            deadline = time.monotonic() + 12
-            for _ in range(20):
-                try:
-                    record = records.get(timeout=max(0, deadline - time.monotonic()))
-                except Empty as error:
-                    raise TimeoutError(f"Waiting for private KWin event {event}") from error
-                print(json.dumps({k: v for k, v in record.items() if k != "preview"}), flush=True)
-                if record["event"] == event:
-                    return record
-                require(record["event"] != "compositor-exited", "Private compositor exited")
-            raise RuntimeError(f"Missing event {event}")
+        def expect(event, **expected_fields):
+            try:
+                record = records.get(timeout=12)
+            except Empty as error:
+                raise TimeoutError(f"Waiting for private KWin event {event}") from error
+            print(json.dumps({k: v for k, v in record.items() if k != "preview"}), flush=True)
+            require(record["event"] == event and all(
+                record.get(field) == value for field, value in expected_fields.items()
+            ), f"Unexpected private KWin event while waiting for {event}")
+            return record
 
         wait_for(lambda: bus_call(bus, "NameHasOwner", "s", (KWIN,)), "Private KWin owner")
         owner = bus_call(bus, "GetNameOwner", "s", (KWIN,))
@@ -257,8 +255,8 @@ def work(run, expected_host_bus_id, adapter):
         call(bus, owner, f"/Scripting/Script{handle}", "org.kde.kwin.Script", "run")
         expect("ready")
 
-        def check_capture():
-            record = expect("captured")
+        def check_capture(process):
+            record = expect("captured", pid=process.pid)
             require(all(record[key] is True for key in ("liveRevalidated", "foreignProposalRefused",
                         "pendingConflictRefused", "immutable", "distinctDesktops")),
                     "Private live snapshot validation failed")
@@ -302,37 +300,37 @@ def work(run, expected_host_bus_id, adapter):
             print("Private native preview presented after Rust refusal", flush=True)
 
         show(apps[0])
-        first = check_capture()
+        first = check_capture(apps[0])
         show(apps[1])
         assert_invalidated("focus", first)
-        second = check_capture()
+        second = check_capture(apps[1])
         require(second["generation"] > first["generation"], "Native object generation reused")
         stop(apps[1])
         assert_invalidated("window-removed", second)
-        expect("fixture-removed")
+        expect("fixture-removed", pid=apps[1].pid)
         stop(apps[0])
-        expect("fixture-removed")
+        expect("fixture-removed", pid=apps[0].pid)
 
         show(apps[2])
-        third = check_capture()
+        third = check_capture(apps[2])
         require(third["generation"] > second["generation"], "Native object generation reused")
         present(apps[2], third)
         view_command(apps[2], {"dismiss": True}, "cancelled")
         assert_invalidated("window-removed", third)
-        expect("fixture-removed")
+        expect("fixture-removed", pid=apps[2].pid)
         require(apps[2].wait(timeout=3) == 0, "Cancelled fixture did not close cleanly")
 
         show(apps[3])
-        fourth = check_capture()
+        fourth = check_capture(apps[3])
         present(apps[3], fourth)
         assert_invalidated("expired", fourth)
         require(view_command(apps[3], {"invalidate": True}, "hidden")["empty"],
                 "Expired native preview remained visible")
         stop(apps[3])
-        expect("fixture-removed")
+        expect("fixture-removed", pid=apps[3].pid)
 
         show(apps[4])
-        fifth = check_capture()
+        fifth = check_capture(apps[4])
         present(apps[4], fifth)
         desktop_state = call(bus, owner, desktops_path, PROPERTIES, "GetAll", "s",
                              (desktops_interface,))
@@ -351,7 +349,7 @@ def work(run, expected_host_bus_id, adapter):
         require(desktop_final["count"] == 1 and desktop_final["current"] == desktop_state["current"],
                 "Unexpected post-test fixture desktop state")
         stop(apps[4])
-        expect("fixture-removed")
+        expect("fixture-removed", pid=apps[4].pid)
         call(bus, owner, "/Scripting", "org.kde.kwin.Scripting", "unloadScript", "s", (identifier,))
 
         # Exercise the passive view as a client of this compositor. QtTest uses

@@ -111,4 +111,20 @@ mod tests {
         let extra = r#"{"sourceDesktop":"source","destinationDesktop":"dest","activity":"activity","capability":"claim"}"#;
         assert!(serde_json::from_str::<PlacementPreview>(extra).is_err());
     }
+
+    #[test]
+    fn rejects_authority_claims_on_the_fixture_envelope() {
+        let envelope = serde_json::json!({
+            "busId": Uuid::new_v4(),
+            "uniqueOwner": ":1.2",
+            "uid": 1000,
+            "preview": {"sourceDesktop": "source", "destinationDesktop": "destination", "activity": "activity"}
+        });
+        assert!(serde_json::from_value::<FixtureInput>(envelope.clone()).is_ok());
+        for field in ["consent", "capability", "interactionOrigin", "operation"] {
+            let mut malformed = envelope.clone();
+            malformed[field] = serde_json::json!("unverified");
+            assert!(serde_json::from_value::<FixtureInput>(malformed).is_err());
+        }
+    }
 }

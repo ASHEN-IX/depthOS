@@ -21,6 +21,7 @@
             pendingConflictRefused: authority.capture(window, destinations[0].id) === null,
             immutable: Object.isFrozen(proposal),
             distinctDesktops: proposal.sourceDesktop !== proposal.destinationDesktop,
+            pid: window.pid,
             generation: proposal.generation,
             incarnation: proposal.compositorIncarnation,
             runtimeId: proposal.trackerRuntimeId,
@@ -35,7 +36,7 @@
     authority.start();
     workspace.windowActivated.connect(captureFixture);
     workspace.windowRemoved.connect(window => {
-        if (fixturePids.includes(window.pid)) report({ event: "fixture-removed" });
+        if (fixturePids.includes(window.pid)) report({ event: "fixture-removed", pid: window.pid });
     });
     // Startup/readiness polling is bounded by the launcher. It never grants consent.
     const readiness = new QTimer();

@@ -139,7 +139,9 @@ impl State {
 /// No public constructor, Clone, Deserialize, or serializable bearer credential.
 /// ```compile_fail
 /// use depthos_core::action_security::Consent;
-/// let proof = Consent {};
+/// fn inspect_nonce(proof: &Consent) -> u64 {
+///     proof.nonce
+/// }
 /// ```
 pub struct Consent {
     authority: Arc<()>,

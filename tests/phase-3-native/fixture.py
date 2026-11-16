@@ -32,9 +32,14 @@ def cancelled():
 
 def rendered():
     labels = [root.findChild(QObject, name) for name in ("source", "destination", "activity")]
-    if all(label is not None for label in labels):
+    if root.property("previewVisible") and all(label is not None for label in labels):
         view.frameSwapped.disconnect(rendered)
         report(event="presented", labels=[label.property("text") for label in labels])
+
+
+def hidden():
+    view.frameSwapped.disconnect(hidden)
+    report(event="hidden", empty=not root.property("previewVisible"))
 
 
 def handle(command):
@@ -44,8 +49,9 @@ def handle(command):
     elif command == {"dismiss": True}:
         root.dismissPreview()
     elif command == {"invalidate": True}:
+        view.frameSwapped.connect(hidden)
         root.invalidatePreview()
-        report(event="hidden", empty=not root.property("previewVisible"))
+        view.requestUpdate()
     else:
         raise ValueError("Unknown private fixture command")
 

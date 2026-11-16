@@ -52,6 +52,7 @@ async fn schema_paging_invalidation_limits_conflict_and_shutdown() {
     let p = Proxy::new(&conn, SERVICE, PATH, INTERFACE).await.unwrap();
     let cap = call(&p, "GetCapabilities").await;
     assert_eq!(cap["schemaVersion"], 1);
+    assert_eq!(cap["data"]["readOnly"], true);
     assert_eq!(cap["data"]["assignmentMutations"], false);
     assert_eq!(cap["data"]["selectionOwner"], "client");
     assert_eq!(
@@ -102,6 +103,40 @@ async fn schema_paging_invalidation_limits_conflict_and_shutdown() {
         );
     }
     assert!(p.call::<_, _, String>("Assign", &()).await.is_err());
+    let xml = zbus::fdo::IntrospectableProxy::builder(&conn)
+        .destination(SERVICE)
+        .unwrap()
+        .path(PATH)
+        .unwrap()
+        .build()
+        .await
+        .unwrap()
+        .introspect()
+        .await
+        .unwrap();
+    let (interface, _) = xml
+        .split_once(&format!("<interface name=\"{INTERFACE}\">"))
+        .unwrap()
+        .1
+        .split_once("</interface>")
+        .unwrap();
+    let mut methods: Vec<_> = interface
+        .split("<method name=\"")
+        .skip(1)
+        .map(|element| element.split_once('"').unwrap().0)
+        .collect();
+    methods.sort_unstable();
+    assert_eq!(
+        methods,
+        [
+            "GetCapabilities",
+            "GetContextReport",
+            "GetControllerHealth",
+            "GetCurrentLogicalContext",
+            "GetHierarchy",
+        ]
+    );
+    assert!(!interface.contains("<property"));
     let wrong = Proxy::new(&conn, SERVICE, PATH, "org.depthos.Wrong")
         .await
         .unwrap();

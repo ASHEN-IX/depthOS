@@ -206,9 +206,11 @@ def work(run, expected_host_bus_id):
         require(stat.S_ISSOCK(socket.stat().st_mode), "Private Wayland socket missing")
         support = call(bus, owner, "/KWin", "org.kde.KWin", "supportInformation")
         require(f"KWin version: {VERSION}" in support.splitlines(), "Running KWin version mismatch")
-        desktop_count = call(bus, owner, "/VirtualDesktopManager", PROPERTIES, "Get", "ss",
-                             (KWIN + ".VirtualDesktopManager", "count"))
-        require(desktop_count == 2, "Expected two private desktops")
+        desktops_path = "/VirtualDesktopManager"
+        desktops_interface = KWIN + ".VirtualDesktopManager"
+        desktop_initial = call(bus, owner, desktops_path, PROPERTIES, "GetAll", "s",
+                               (desktops_interface,))
+        require(desktop_initial["count"] == 2, "Expected two private desktops")
         env = {"WAYLAND_DISPLAY": SOCKET, "QT_QPA_PLATFORM": "wayland"}
         bus_call(bus, "UpdateActivationEnvironment", "a{ss}", (env,))
         path = "/ActivityManager/Activities"
@@ -225,7 +227,7 @@ def work(run, expected_host_bus_id):
                           "authority": "deny-only"}), flush=True)
 
         apps = []
-        for index in range(2):
+        for index in range(3):
             output = stack.enter_context((run / f"app{index}.log").open("w"))
             process = subprocess.Popen([sys.executable, str(HERE / "fixture.py")],
                                        env={**os.environ, **env}, stdin=subprocess.PIPE,
@@ -270,6 +272,26 @@ def work(run, expected_host_bus_id):
         assert_invalidated("window-removed")
         expect("fixture-removed")
         stop(apps[0])
+        expect("fixture-removed")
+
+        show(apps[2])
+        third = check_capture()
+        require(third["generation"] > second["generation"], "Native object generation reused")
+        desktop_state = call(bus, owner, desktops_path, PROPERTIES, "GetAll", "s",
+                             (desktops_interface,))
+        require(desktop_state["current"] == desktop_initial["current"],
+                "Fixture current desktop changed before topology exercise")
+        unused = [row[1] for row in desktop_state["desktops"] if row[1] != desktop_state["current"]]
+        require(len(unused) == 1, "Expected one unused private desktop")
+        # Remove only the unused fixture destination. The sole owned window remains
+        # on the private current desktop. No window placement or focus setter is used.
+        call(bus, owner, desktops_path, desktops_interface, "removeDesktop", "s", (unused[0],))
+        assert_invalidated("topology")
+        desktop_final = call(bus, owner, desktops_path, PROPERTIES, "GetAll", "s",
+                             (desktops_interface,))
+        require(desktop_final["count"] == 1 and desktop_final["current"] == desktop_state["current"],
+                "Unexpected post-test fixture desktop state")
+        stop(apps[2])
         expect("fixture-removed")
         call(bus, owner, "/Scripting", "org.kde.kwin.Scripting", "unloadScript", "s", (identifier,))
 

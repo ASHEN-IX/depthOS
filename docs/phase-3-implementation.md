@@ -2,7 +2,7 @@
 
 **PHASE 3 PARTIALLY IMPLEMENTED**
 
-The integration branch starts from `6543b65213f24a733012ac5db50e69ed382d1cfb`. The default build retains the read-only spatial bridge and rejects every interaction claim. The isolated Rust fixture exercises one-use consumption and a counting sink. The consent pane has a cancellation path. KWin's supported scripting surface can observe window and placement changes. A protected approval path and a compositor-owned handoff to the Rust execution turn remain open gates.
+The integration branch starts from `6543b65213f24a733012ac5db50e69ed382d1cfb`. The completion pass starts from `71f827ee140c2c8ca0e4c91a9dc7938995dc16a5`. The default build retains the read-only spatial bridge and rejects every interaction claim. The private native fixture now renders the captured proposal's placement after Rust explicitly refuses authorization. The isolated Rust fixture exercises one-use consumption and a counting sink. Protected input, prompt ownership, seat and lock enforcement, and a compositor-owned handoff to Rust remain open gates.
 
 ## Architecture
 
@@ -12,7 +12,9 @@ flowchart LR
     KWin --> Observer["Existing observer"]
     Observer --> Controller["Existing Rust controller"]
     Controller --> Bridge["Read-only D-Bus bridge"]
-    Prompt["Deny-only consent view"] --> Dismiss["Cancel or dismiss"]
+    Tracker --> Projection["Private Rust fixture projects placement after refusal"]
+    Projection --> Prompt["Deny-only consent view on the owned Wayland surface"]
+    Prompt --> Dismiss["Cancel or dismiss"]
     Claims["External interaction claims"] --> Refusal["UnverifiedInteraction"]
     World["Synthetic world and clock"] --> Proposal["Immutable move proposal"]
     Internal["Private unit-test marker"] --> Turn["Validate live fixture state and consume"]
@@ -20,7 +22,9 @@ flowchart LR
     Turn --> Sink["Count one would-dispatch result"]
 ```
 
-The two isolated fixtures exercise different boundaries. Native KWin owns native placement. The Rust unit-test fixture owns the snapshot, lock/seat/prompt facts, clock and sink for a synchronous model turn. There is no runtime edge that converts KWin observations or consent pane events into authorization.
+Native KWin owns native placement. The tracker sends a display projection through the private Rust example. The unit-test authority owns its own synthetic snapshot, lock, seat, and prompt facts, clock and sink for a synchronous turn. There is no runtime edge that converts KWin observations or consent pane events into authorization.
+
+The [native authority report](phase-3-native-authority.md) records display consistency, lifecycle behavior and API evidence. The [independent security review](phase-3-security-review.md) identifies the qualified denials and remaining trust gates. The [completion validation report](phase-3-validation.md) records commands, host comparison and current performance measurements. Verification and performance sections below preserve the preceding implementation pass as a comparison point.
 
 `NativeMoveProposal` captures a generated proposal ID, exact `WindowKey`, native UUID, compositor owner and incarnation, coordinator epoch, observer session and epoch, observation sequence and revision, policy and topology revisions, source, destination, unchanged Activity and monotonic deadline. The model requires synchronized state, a unique UUID and runtime identity, a current window generation, eligible visible placement and exact versions. Placement comes from the fixture snapshot. Caller-supplied titles and application IDs cannot stand in for native identity.
 
@@ -44,7 +48,7 @@ The installed packages are KWin `6.8.3-1`, Qt Base `6.12.0-5` and Qt Declarative
 
 `sha256sum /usr/bin/kwin_wayland` and `readelf -n /usr/bin/kwin_wayland` exited 0. The executable SHA-256 is `33350d420b7b196c1e1f90ffa8c1280b4b3102d4e4b60e1929bad525be93df5e` and its GNU build ID is `6eb58cf1f8d875ef625487ec2f404e8cc969c517`. The tracker uses the script-visible close and workspace removal signals and rechecks workspace membership. Those are the qualified lifecycle surfaces. [Workspace wrapper](https://github.com/KDE/kwin/blob/v6.8.3/src/scripting/workspace_wrapper.h) · [Window properties](https://github.com/KDE/kwin/blob/v6.8.3/src/window.h)
 
-## Workstream status
+## Initial workstream status at `71f827e`
 
 | Workstream | Implementation | Remaining gate |
 | --- | --- | --- |
@@ -117,6 +121,38 @@ The same command then ran all eight consent QtTest results on the private Waylan
 
 The host comparator uses read-only D-Bus for the host compositor owner, desktops, effects and Activity. It compares the monitored configuration bytes and autostart and extension paths on disk. It never connects to the host Wayland socket, so host window inventory and focus are outside the comparison. Final runs recorded equality for all monitored fields, removal of the private process group, Wayland socket and temporary XDG roots. Earlier runs returned exit 1 on changed host current desktop, including an integrated run in which the native tracker and eight QML tests had passed. The comparator did not restore host state. The raw integrated outputs are under `artifacts/phase-3/native-*.log`.
 
-## Release decision
+## Release decision at `71f827e`
 
 The deny-only defaults are verified. Positive dispatch and the lock, seat, epoch and acknowledgement fault cases are model evidence. The native tracker rechecks live window state synchronously but does not bind the coordinator checkpoint, implement monotonic expiration or consume a Rust capability. A real adapter remains disabled pending a supported compositor-owned handoff that proves all three together. Native provenance for EIS, remote/portal, accessibility and physical actions is unresolved. These gaps block the full Phase 3 verdict and any authorization for native mutations.
+
+## Completion pass
+
+Agent 1 connected the private tracker to an explicit Rust display-projection example and the owned Wayland source surface in `ed7df94`. Cancellation, private timer expiry and topology invalidation now withdraw matching displayed placement. The host comparator additionally captures compositor PID, Activity owner and the full Activity ID list. Agent 2 independently reviewed the checkpoint and corrected event ordering, PID correlation, post-invalidation frame verification, consent privacy evidence and request-envelope rejection in `3ba6769`.
+
+| Completion acceptance item | Current result |
+| --- | --- |
+| Native tracker and immutable proposal display | Verified in isolated KWin with actual frame labels |
+| Cancellation and expiry | Verified withdrawal in the private fixture |
+| Protected context | Unknown native consent, seat, lock and prompt ownership remain denied |
+| Rust consistency | Display-only projection always follows the production refusal method |
+| Atomic synthetic sink | Existing exclusive Rust turn and one-use tests pass |
+| Native atomic handoff | Unsupported by the qualified integration |
+| Host isolation | Final monitored pre/post fields match. Native host window inventory and focus are unobserved. |
+| Regression suite | 128 workspace tests plus three example tests pass. Build, formatting, strict Clippy, private tests and Git integrity pass. |
+
+**PHASE 3 PARTIALLY IMPLEMENTED** remains the evidence-based verdict. The native display integration is complete for the deny-only fixture. Protected input, native seat and lock enforcement, protected prompt ownership and the compositor-owned capability handoff remain unresolved. Native observer replacement and native duplicate-identifier scenarios lack dedicated end-to-end coverage. Model tests cover the corresponding identity and epoch refusal rules.
+
+## Completion file inventory and rollback
+
+Agent 1 changed or added the following paths.
+
+- `examples/phase3-native-preview.rs`
+- `experiments/kwin-authority/authority.js`
+- `tests/phase-3-native/Fixture.qml`
+- `tests/phase-3-native/fixture.py`
+- `tests/phase-3-native/probe.js`
+- `tests/phase-3-native/run.py`
+
+Agent 2 corrected the example and three fixture implementation files above and changed the privacy doctest in `src/action_security/mod.rs`. The lead updated this report and added `docs/phase-3-security-review.md`, `docs/phase-3-native-authority.md` and `docs/phase-3-validation.md`. Cargo manifests, dependencies, schema and production transport interfaces retain their existing content.
+
+To return to the preceding Phase 3 baseline, switch to `71f827ee140c2c8ca0e4c91a9dc7938995dc16a5` in a separate checkout or revert the completion documentation, correction and implementation commits in reverse order. Preserve unrelated changes and ignored evidence. The private fixture removes its own resources, so rollback requires no host configuration action. The canonical checkout remains at `6543b65213f24a733012ac5db50e69ed382d1cfb`.

@@ -80,6 +80,20 @@ impl ControllerHealth {
             context: None,
         }
     }
+
+    fn mark_stopping(&mut self) -> bool {
+        if matches!(self.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped)
+            || self.reason == RecoveryReason::WorkerLost
+        {
+            return false;
+        }
+        self.lifecycle = Lifecycle::Stopping;
+        self.observation = ObservationHealth::Stopping;
+        self.context = None;
+        self.database_available = false;
+        self.reason = RecoveryReason::Shutdown;
+        true
+    }
 }
 #[derive(Clone)]
 pub struct ControllerOptions {
@@ -343,15 +357,8 @@ impl Controller {
     }
     pub fn last_health(&self) -> ControllerHealth {
         let mut health = self.inner.health.borrow().clone();
-        if *self.inner.cancel.borrow()
-            && !matches!(health.lifecycle, Lifecycle::Stopped | Lifecycle::Stopping)
-            && health.reason != RecoveryReason::WorkerLost
-        {
-            health.lifecycle = Lifecycle::Stopping;
-            health.observation = ObservationHealth::Stopping;
-            health.context = None;
-            health.database_available = false;
-            health.reason = RecoveryReason::Shutdown;
+        if *self.inner.cancel.borrow() {
+            health.mark_stopping();
         }
         health
     }
@@ -394,25 +401,23 @@ impl Controller {
         self.request(Command::Retry).await
     }
     fn cleanup_result(&self) -> Result<(), ControllerError> {
-        if self.last_health().reason == RecoveryReason::CleanupFailed {
-            Err(ControllerError::CleanupFailed)
-        } else {
-            Ok(())
+        let health = self.inner.health.borrow();
+        match (health.lifecycle, health.reason) {
+            (Lifecycle::Stopped, RecoveryReason::CleanupFailed) => {
+                Err(ControllerError::CleanupFailed)
+            }
+            (Lifecycle::Stopped, RecoveryReason::Shutdown) => Ok(()),
+            _ => Err(ControllerError::WorkerLost),
         }
     }
     pub async fn shutdown(&self) -> Result<(), ControllerError> {
         self.inner.cancel.send_replace(true);
-        if let Some(sender) = self.inner.announce_stop.lock().unwrap().take() {
-            let mut health = sender.borrow().clone();
-            if health.lifecycle != Lifecycle::Stopped && health.reason != RecoveryReason::WorkerLost
-            {
-                health.lifecycle = Lifecycle::Stopping;
-                health.observation = ObservationHealth::Stopping;
-                health.reason = RecoveryReason::Shutdown;
-                health.context = None;
-                health.database_available = false;
-                sender.send_replace(health);
-            }
+        let sender = self.inner.announce_stop.lock().unwrap().take();
+        if let Some(sender) = sender {
+            #[cfg(test)]
+            tests::before_stop_publication();
+            // The worker may finish while the handle is announcing cancellation.
+            sender.send_if_modified(ControllerHealth::mark_stopping);
         }
         let task = self.inner.task.lock().unwrap().take();
         if let Some(mut task) = task {
@@ -428,11 +433,12 @@ impl Controller {
         } else {
             let mut health = self.subscribe();
             tokio::time::timeout(Duration::from_secs(8), async {
-                while health.borrow().lifecycle != Lifecycle::Stopped {
-                    if health.changed().await.is_err() {
-                        return Err(ControllerError::WorkerLost);
-                    }
-                }
+                health
+                    .wait_for(|h| {
+                        h.lifecycle == Lifecycle::Stopped || h.reason == RecoveryReason::WorkerLost
+                    })
+                    .await
+                    .map_err(|_| ControllerError::WorkerLost)?;
                 self.cleanup_result()
             })
             .await

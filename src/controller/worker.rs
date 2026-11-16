@@ -105,16 +105,20 @@ impl Actor {
         }
     }
     fn publish(&self, h: ControllerHealth) {
-        let old = self.health.borrow().clone();
-        if old.lifecycle == Lifecycle::Stopping
-            && !matches!(h.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped)
-        {
-            return;
-        }
-        debug_assert!(old.lifecycle.allows(h.lifecycle));
-        if old != h {
-            self.health.send_replace(h);
-        }
+        self.health.send_if_modified(|current| {
+            if current.lifecycle == Lifecycle::Stopped
+                || (current.lifecycle == Lifecycle::Stopping
+                    && !matches!(h.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped))
+            {
+                return false;
+            }
+            debug_assert!(current.lifecycle.allows(h.lifecycle));
+            if *current == h {
+                return false;
+            }
+            *current = h;
+            true
+        });
     }
     fn refresh(&mut self) {
         let mut result = self.context.synchronize(&self.app);

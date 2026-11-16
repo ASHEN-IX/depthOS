@@ -1,4 +1,95 @@
 use super::*;
+use std::{cell::RefCell, future::poll_fn, pin::pin, sync::mpsc as sync_mpsc, task::Poll};
+
+struct StopPublicationGate {
+    reached: oneshot::Sender<()>,
+    release: sync_mpsc::Receiver<()>,
+}
+
+thread_local! {
+    static STOP_PUBLICATION_GATE: RefCell<Option<StopPublicationGate>> = const { RefCell::new(None) };
+}
+
+pub(super) fn before_stop_publication() {
+    if let Some(gate) = STOP_PUBLICATION_GATE.take() {
+        gate.reached.send(()).unwrap();
+        gate.release.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_shutdown_announcement_preserves_terminal_outcome() {
+    for reason in [RecoveryReason::Shutdown, RecoveryReason::CleanupFailed] {
+        let (tx, _commands) = mpsc::channel(1);
+        let (status, health) = watch::channel(ControllerHealth::starting());
+        let (cancel, stop) = watch::channel(false);
+        let (finish_worker, finish) = oneshot::channel();
+        let worker_status = status.clone();
+        let task = tokio::spawn(async move {
+            finish.await.unwrap();
+            assert!(*stop.borrow());
+            worker_status.send_modify(|health| {
+                health.lifecycle = Lifecycle::Stopped;
+                health.reason = reason;
+                health.database_available = false;
+            });
+        });
+        let c = Controller {
+            inner: Arc::new(Inner {
+                tx,
+                health,
+                announce_stop: Mutex::new(Some(status)),
+                cancel,
+                task: Mutex::new(Some(task)),
+                timeout: Duration::from_secs(1),
+            }),
+        };
+        let mut subscriber = c.subscribe();
+        let (reached, at_publication) = oneshot::channel();
+        let (resume, release) = sync_mpsc::channel();
+        let delayed = tokio::spawn({
+            let c = c.clone();
+            async move {
+                STOP_PUBLICATION_GATE.set(Some(StopPublicationGate { reached, release }));
+                c.shutdown().await
+            }
+        });
+        at_publication.await.unwrap();
+
+        // The second caller takes the join handle while the first is paused.
+        let mut joining = pin!(c.shutdown());
+        poll_fn(|cx| {
+            assert!(joining.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        finish_worker.send(()).unwrap();
+        let terminal = subscriber
+            .wait_for(|health| health.lifecycle == Lifecycle::Stopped)
+            .await
+            .unwrap()
+            .clone();
+        assert_eq!(terminal.reason, reason);
+        resume.send(()).unwrap();
+
+        let delayed_result = delayed.await.unwrap();
+        assert_eq!(c.last_health(), terminal);
+        let joining_result = joining.await;
+        let repeated_result = c.shutdown().await;
+        for result in [delayed_result, joining_result, repeated_result] {
+            match reason {
+                RecoveryReason::Shutdown => result.unwrap(),
+                RecoveryReason::CleanupFailed => {
+                    assert!(matches!(result, Err(ControllerError::CleanupFailed)));
+                }
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(*subscriber.borrow(), terminal);
+        assert!(subscriber.changed().await.is_err());
+    }
+}
+
 #[test]
 fn lifecycle_terminal_transitions_are_explicit() {
     assert!(Lifecycle::Starting.allows(Lifecycle::WaitingForObserver));
@@ -33,6 +124,12 @@ async fn interrupted_worker_closes_api_and_invalidates_status() {
         c.shutdown().await,
         Err(ControllerError::WorkerLost)
     ));
+    assert!(matches!(
+        c.shutdown().await,
+        Err(ControllerError::WorkerLost)
+    ));
+    assert_eq!(status.borrow().reason, RecoveryReason::WorkerLost);
+    assert_eq!(status.borrow().lifecycle, Lifecycle::Degraded);
 }
 #[tokio::test]
 async fn bounded_queue_reports_busy_without_enqueuing_a_duplicate_operation() {

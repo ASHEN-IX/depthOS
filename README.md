@@ -9,7 +9,7 @@ target/debug/depthos --db "$test_dir/depthos.sqlite3" doctor
 cargo test --locked
 ```
 
-See the [Phase 2.1 architecture, CLI, and validation guide](docs/phase-2.md).
+See the [Phase 2.1 architecture, CLI, and validation guide](docs/phase-2.md). [Maintaining DepthOS](docs/maintenance.md) covers validation and historical evidence.
 
 Latest qualification: [POC-02G](docs/poc-02g.md) — **KWIN 6.8.3 ISOLATED QUALIFIED**. 104 local checks and 72 final native isolated assertions pass, including real thumbnails, dynamic observer/model events, EIS input and typing recovery. Watchdog cleanup and exact host preservation pass. Production code is unchanged. Host preparation remains blocked by installed 6.8.3 / running 6.8.1; isolated evidence grants no host authorization. Phase 1 remains partially accepted.
 

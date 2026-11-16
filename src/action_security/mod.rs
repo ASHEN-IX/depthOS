@@ -116,6 +116,8 @@ pub enum Uncertainty {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
+    #[cfg(test)]
+    WouldDispatch,
     Authorized,
     InFlight,
     Succeeded,
@@ -676,3 +678,6 @@ impl Authorizer {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod execution;

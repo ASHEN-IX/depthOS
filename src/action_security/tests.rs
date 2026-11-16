@@ -6,7 +6,7 @@ fn id(n: u128) -> Uuid {
 fn ws(n: u128) -> WorkspaceId {
     WorkspaceId(id(n))
 }
-fn fixture() -> (Authorizer, Client, World, ActionRequest) {
+pub(super) fn fixture() -> (Authorizer, Client, World, ActionRequest) {
     let a = Authorizer::new();
     let c = Client {
         bus_id: id(1),

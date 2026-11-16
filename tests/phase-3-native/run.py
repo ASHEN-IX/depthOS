@@ -272,6 +272,14 @@ def work(run, expected_host_bus_id):
         stop(apps[0])
         expect("fixture-removed")
         call(bus, owner, "/Scripting", "org.kde.kwin.Scripting", "unloadScript", "s", (identifier,))
+
+        # Exercise the passive view as a client of this compositor. QtTest uses
+        # local view events and cannot supply a compositor approval event.
+        subprocess.run(
+            ["/usr/lib/qt6/bin/qmltestrunner", "-input", str(ROOT / "tests/phase-3")],
+            env={**os.environ, **env, "QT_QUICK_BACKEND": "software"},
+            check=True, timeout=20,
+        )
         stop(kwin)
         reader.join(timeout=3)
         require(not reader.is_alive(), "Private compositor log reader did not stop")

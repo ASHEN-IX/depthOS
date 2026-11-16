@@ -1,0 +1,11 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Id": "depthos-system-observer",
+        "Name": "DepthOS System Observer",
+        "Description": "POC-02A read-only native state discovery; manual development lifecycle",
+        "EnabledByDefault": false,
+        "Version": "0.2.0"
+    },
+    "X-Plasma-API": "javascript"
+}

@@ -1,0 +1,30 @@
+{
+  "cliProcess": {
+    "emptyMemoryKiB": {
+      "VmHWM": 13020,
+      "VmRSS": 13020
+    },
+    "fixture": "private-bus CLI, 1000 windows",
+    "idleCpuPercentOneCore": 0.49923461691793375,
+    "idleHeartbeats": 1,
+    "idleSampleSeconds": 2.003066226003284,
+    "initialSyncMs": 97.81606800243026,
+    "loadedMemoryKiB": {
+      "VmHWM": 20608,
+      "VmRSS": 20192
+    },
+    "rehelloRecoveryMs": 97.07567800069228,
+    "startupToWaitingMs": 6.567821001226548
+  },
+  "recordedUtc": "2026-11-16T14:37:03.512359+00:00",
+  "releaseLibrary": {
+    "eventMaxMs": 5.490393,
+    "eventMedianMs": 4.953948,
+    "eventP95Ms": 5.366892,
+    "events": 100,
+    "initialSyncMs": 32.125963,
+    "recoveryMs": 29.822281,
+    "startupMs": 2.0927659999999997,
+    "windows": 1000
+  }
+}

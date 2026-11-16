@@ -1,0 +1,13 @@
+{
+    "KPackageStructure": "KWin/Effect",
+    "KPlugin": {
+        "Id": "depthos-spatial-poc",
+        "Name": "DepthOS Spatial POC",
+        "Description": "POC-01: animated spatial layer with no workspace or window changes",
+        "Category": "Appearance",
+        "EnabledByDefault": false,
+        "Version": "0.1.1"
+    },
+    "X-KDE-Ordering": 60,
+    "X-Plasma-API": "declarativescript"
+}

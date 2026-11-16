@@ -1,0 +1,13 @@
+{
+    "KPackageStructure": "KWin/Effect",
+    "KPlugin": {
+        "Id": "depthos-spatial-overview",
+        "Name": "DepthOS Native Overview",
+        "Description": "POC-02B: read-only native windows, desktops and Activities",
+        "EnabledByDefault": false,
+        "Category": "Appearance",
+        "Version": "0.2.0"
+    },
+    "X-KDE-Ordering": 60,
+    "X-Plasma-API": "declarativescript"
+}

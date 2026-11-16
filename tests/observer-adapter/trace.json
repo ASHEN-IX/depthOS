@@ -1,0 +1,631 @@
+{
+  "frames": [
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 1,
+      "revision": 1,
+      "type": "snapshot",
+      "reason": "initial",
+      "state": {
+        "desktops": [
+          {
+            "id": "desktop-native-1",
+            "nativeId": "desktop-native-1",
+            "name": "Desktop 1"
+          }
+        ],
+        "activities": [
+          "activity-1"
+        ],
+        "screens": [
+          {
+            "id": "screen-1",
+            "name": "eDP-example",
+            "geometry": {
+              "x": 0,
+              "y": 0,
+              "width": 1920,
+              "height": 1080
+            },
+            "scale": 1
+          }
+        ],
+        "activeWindowId": "window-1",
+        "activeDesktopId": "desktop-native-1",
+        "activeActivityId": "activity-1",
+        "activeDesktopByScreen": {
+          "screen-1": "desktop-native-1"
+        },
+        "windows": [
+          {
+            "runtimeId": "window-1",
+            "nativeId": "12345678-1234-1234-1234-123456789abc",
+            "windowingSystem": null,
+            "title": "Sanitized editor",
+            "applicationId": "org.example.Editor",
+            "resourceClass": "example",
+            "resourceName": "editor",
+            "classification": "application",
+            "typeFlags": {
+              "desktopWindow": null,
+              "dock": null,
+              "toolbar": null,
+              "menu": null,
+              "splash": null,
+              "dropdownMenu": null,
+              "popupMenu": null,
+              "tooltip": null,
+              "notification": null,
+              "criticalNotification": null,
+              "appletPopup": null,
+              "onScreenDisplay": null,
+              "comboBox": null,
+              "dndIcon": null,
+              "outline": null,
+              "inputMethod": null
+            },
+            "parentRuntimeId": null,
+            "desktopIds": [],
+            "activityIds": [],
+            "onAllActivities": true,
+            "onAllDesktops": true,
+            "geometry": {
+              "x": 10,
+              "y": 20,
+              "width": 800,
+              "height": 600
+            },
+            "screenId": "screen-1",
+            "minimized": false,
+            "fullscreen": false,
+            "skipTaskbar": false,
+            "excludeFromCapture": false,
+            "truncatedFields": []
+          }
+        ],
+        "applicationWindowIds": [
+          "window-1"
+        ],
+        "capabilities": {
+          "missingSignals": [],
+          "windowingSystem": "not-exposed-by-public-window-properties"
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 2,
+      "revision": 2,
+      "type": "window.metadata.changed",
+      "windowId": "window-1",
+      "changedFields": [
+        "title"
+      ],
+      "window": {
+        "runtimeId": "window-1",
+        "nativeId": "12345678-1234-1234-1234-123456789abc",
+        "windowingSystem": null,
+        "title": "Sanitized changed",
+        "applicationId": "org.example.Editor",
+        "resourceClass": "example",
+        "resourceName": "editor",
+        "classification": "application",
+        "typeFlags": {
+          "desktopWindow": null,
+          "dock": null,
+          "toolbar": null,
+          "menu": null,
+          "splash": null,
+          "dropdownMenu": null,
+          "popupMenu": null,
+          "tooltip": null,
+          "notification": null,
+          "criticalNotification": null,
+          "appletPopup": null,
+          "onScreenDisplay": null,
+          "comboBox": null,
+          "dndIcon": null,
+          "outline": null,
+          "inputMethod": null
+        },
+        "parentRuntimeId": null,
+        "desktopIds": [],
+        "activityIds": [],
+        "onAllActivities": true,
+        "onAllDesktops": true,
+        "geometry": {
+          "x": 10,
+          "y": 20,
+          "width": 800,
+          "height": 600
+        },
+        "screenId": "screen-1",
+        "minimized": false,
+        "fullscreen": false,
+        "skipTaskbar": false,
+        "excludeFromCapture": false,
+        "truncatedFields": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 3,
+      "revision": 3,
+      "type": "window.desktop.changed",
+      "windowId": "window-1",
+      "changedFields": [
+        "desktopIds",
+        "onAllDesktops"
+      ],
+      "window": {
+        "runtimeId": "window-1",
+        "nativeId": "12345678-1234-1234-1234-123456789abc",
+        "windowingSystem": null,
+        "title": "Sanitized changed",
+        "applicationId": "org.example.Editor",
+        "resourceClass": "example",
+        "resourceName": "editor",
+        "classification": "application",
+        "typeFlags": {
+          "desktopWindow": null,
+          "dock": null,
+          "toolbar": null,
+          "menu": null,
+          "splash": null,
+          "dropdownMenu": null,
+          "popupMenu": null,
+          "tooltip": null,
+          "notification": null,
+          "criticalNotification": null,
+          "appletPopup": null,
+          "onScreenDisplay": null,
+          "comboBox": null,
+          "dndIcon": null,
+          "outline": null,
+          "inputMethod": null
+        },
+        "parentRuntimeId": null,
+        "desktopIds": [
+          "desktop-native-1"
+        ],
+        "activityIds": [],
+        "onAllActivities": true,
+        "onAllDesktops": false,
+        "geometry": {
+          "x": 10,
+          "y": 20,
+          "width": 800,
+          "height": 600
+        },
+        "screenId": "screen-1",
+        "minimized": false,
+        "fullscreen": false,
+        "skipTaskbar": false,
+        "excludeFromCapture": false,
+        "truncatedFields": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 4,
+      "revision": 4,
+      "type": "window.activity.changed",
+      "windowId": "window-1",
+      "changedFields": [
+        "activityIds",
+        "onAllActivities"
+      ],
+      "window": {
+        "runtimeId": "window-1",
+        "nativeId": "12345678-1234-1234-1234-123456789abc",
+        "windowingSystem": null,
+        "title": "Sanitized changed",
+        "applicationId": "org.example.Editor",
+        "resourceClass": "example",
+        "resourceName": "editor",
+        "classification": "application",
+        "typeFlags": {
+          "desktopWindow": null,
+          "dock": null,
+          "toolbar": null,
+          "menu": null,
+          "splash": null,
+          "dropdownMenu": null,
+          "popupMenu": null,
+          "tooltip": null,
+          "notification": null,
+          "criticalNotification": null,
+          "appletPopup": null,
+          "onScreenDisplay": null,
+          "comboBox": null,
+          "dndIcon": null,
+          "outline": null,
+          "inputMethod": null
+        },
+        "parentRuntimeId": null,
+        "desktopIds": [
+          "desktop-native-1"
+        ],
+        "activityIds": [
+          "activity-1"
+        ],
+        "onAllActivities": false,
+        "onAllDesktops": false,
+        "geometry": {
+          "x": 10,
+          "y": 20,
+          "width": 800,
+          "height": 600
+        },
+        "screenId": "screen-1",
+        "minimized": false,
+        "fullscreen": false,
+        "skipTaskbar": false,
+        "excludeFromCapture": false,
+        "truncatedFields": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 5,
+      "revision": 5,
+      "type": "window.state.changed",
+      "windowId": "window-1",
+      "changedFields": [
+        "minimized",
+        "fullscreen"
+      ],
+      "window": {
+        "runtimeId": "window-1",
+        "nativeId": "12345678-1234-1234-1234-123456789abc",
+        "windowingSystem": null,
+        "title": "Sanitized changed",
+        "applicationId": "org.example.Editor",
+        "resourceClass": "example",
+        "resourceName": "editor",
+        "classification": "application",
+        "typeFlags": {
+          "desktopWindow": null,
+          "dock": null,
+          "toolbar": null,
+          "menu": null,
+          "splash": null,
+          "dropdownMenu": null,
+          "popupMenu": null,
+          "tooltip": null,
+          "notification": null,
+          "criticalNotification": null,
+          "appletPopup": null,
+          "onScreenDisplay": null,
+          "comboBox": null,
+          "dndIcon": null,
+          "outline": null,
+          "inputMethod": null
+        },
+        "parentRuntimeId": null,
+        "desktopIds": [
+          "desktop-native-1"
+        ],
+        "activityIds": [
+          "activity-1"
+        ],
+        "onAllActivities": false,
+        "onAllDesktops": false,
+        "geometry": {
+          "x": 10,
+          "y": 20,
+          "width": 800,
+          "height": 600
+        },
+        "screenId": "screen-1",
+        "minimized": true,
+        "fullscreen": true,
+        "skipTaskbar": false,
+        "excludeFromCapture": false,
+        "truncatedFields": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 6,
+      "revision": 6,
+      "type": "window.geometry.changed",
+      "windowId": "window-1",
+      "changedFields": [
+        "geometry"
+      ],
+      "window": {
+        "runtimeId": "window-1",
+        "nativeId": "12345678-1234-1234-1234-123456789abc",
+        "windowingSystem": null,
+        "title": "Sanitized changed",
+        "applicationId": "org.example.Editor",
+        "resourceClass": "example",
+        "resourceName": "editor",
+        "classification": "application",
+        "typeFlags": {
+          "desktopWindow": null,
+          "dock": null,
+          "toolbar": null,
+          "menu": null,
+          "splash": null,
+          "dropdownMenu": null,
+          "popupMenu": null,
+          "tooltip": null,
+          "notification": null,
+          "criticalNotification": null,
+          "appletPopup": null,
+          "onScreenDisplay": null,
+          "comboBox": null,
+          "dndIcon": null,
+          "outline": null,
+          "inputMethod": null
+        },
+        "parentRuntimeId": null,
+        "desktopIds": [
+          "desktop-native-1"
+        ],
+        "activityIds": [
+          "activity-1"
+        ],
+        "onAllActivities": false,
+        "onAllDesktops": false,
+        "geometry": {
+          "x": 30,
+          "y": 40,
+          "width": 640,
+          "height": 480
+        },
+        "screenId": "screen-1",
+        "minimized": true,
+        "fullscreen": true,
+        "skipTaskbar": false,
+        "excludeFromCapture": false,
+        "truncatedFields": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 7,
+      "revision": 7,
+      "type": "window.added",
+      "windowId": "window-2",
+      "window": {
+        "runtimeId": "window-2",
+        "nativeId": "12345678-1234-1234-1234-123456789abc",
+        "windowingSystem": null,
+        "title": null,
+        "applicationId": null,
+        "resourceClass": "example",
+        "resourceName": "editor",
+        "classification": "application",
+        "typeFlags": {
+          "desktopWindow": null,
+          "dock": null,
+          "toolbar": null,
+          "menu": null,
+          "splash": null,
+          "dropdownMenu": null,
+          "popupMenu": null,
+          "tooltip": null,
+          "notification": null,
+          "criticalNotification": null,
+          "appletPopup": null,
+          "onScreenDisplay": null,
+          "comboBox": null,
+          "dndIcon": null,
+          "outline": null,
+          "inputMethod": null
+        },
+        "parentRuntimeId": null,
+        "desktopIds": [],
+        "activityIds": [],
+        "onAllActivities": true,
+        "onAllDesktops": true,
+        "geometry": {
+          "x": 10,
+          "y": 20,
+          "width": 800,
+          "height": 600
+        },
+        "screenId": null,
+        "minimized": false,
+        "fullscreen": false,
+        "skipTaskbar": false,
+        "excludeFromCapture": false,
+        "truncatedFields": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 8,
+      "revision": 8,
+      "type": "window.focus.changed",
+      "activeWindowId": "window-2"
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 9,
+      "revision": 9,
+      "type": "desktop.list.changed",
+      "desktops": [
+        {
+          "id": "desktop-native-1",
+          "nativeId": "desktop-native-1",
+          "name": "Desktop 1"
+        },
+        {
+          "id": "desktop-native-2",
+          "nativeId": "desktop-native-2",
+          "name": "Desktop 2"
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 10,
+      "revision": 10,
+      "type": "desktop.active.changed",
+      "activeDesktopId": "desktop-native-2",
+      "activeDesktopByScreen": {
+        "screen-1": "desktop-native-2"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 11,
+      "revision": 11,
+      "type": "activity.list.changed",
+      "activities": [
+        "activity-1",
+        "activity-2"
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 12,
+      "revision": 12,
+      "type": "activity.active.changed",
+      "activeActivityId": "activity-2"
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 13,
+      "revision": 13,
+      "type": "screen.list.changed",
+      "screens": [
+        {
+          "id": "screen-1",
+          "name": "eDP-example",
+          "geometry": {
+            "x": 0,
+            "y": 0,
+            "width": 1920,
+            "height": 1080
+          },
+          "scale": 1.5
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "sessionId": "test-session",
+      "sequence": 14,
+      "revision": 14,
+      "type": "window.removed",
+      "windowId": "window-1"
+    }
+  ],
+  "final": {
+    "schemaVersion": 1,
+    "sessionId": "test-session",
+    "sequence": 15,
+    "revision": 14,
+    "type": "snapshot",
+    "reason": "parity",
+    "state": {
+      "desktops": [
+        {
+          "id": "desktop-native-1",
+          "nativeId": "desktop-native-1",
+          "name": "Desktop 1"
+        },
+        {
+          "id": "desktop-native-2",
+          "nativeId": "desktop-native-2",
+          "name": "Desktop 2"
+        }
+      ],
+      "activities": [
+        "activity-1",
+        "activity-2"
+      ],
+      "screens": [
+        {
+          "id": "screen-1",
+          "name": "eDP-example",
+          "geometry": {
+            "x": 0,
+            "y": 0,
+            "width": 1920,
+            "height": 1080
+          },
+          "scale": 1.5
+        }
+      ],
+      "activeWindowId": "window-2",
+      "activeDesktopId": "desktop-native-2",
+      "activeActivityId": "activity-2",
+      "activeDesktopByScreen": {
+        "screen-1": "desktop-native-2"
+      },
+      "windows": [
+        {
+          "runtimeId": "window-2",
+          "nativeId": "12345678-1234-1234-1234-123456789abc",
+          "windowingSystem": null,
+          "title": null,
+          "applicationId": null,
+          "resourceClass": "example",
+          "resourceName": "editor",
+          "classification": "application",
+          "typeFlags": {
+            "desktopWindow": null,
+            "dock": null,
+            "toolbar": null,
+            "menu": null,
+            "splash": null,
+            "dropdownMenu": null,
+            "popupMenu": null,
+            "tooltip": null,
+            "notification": null,
+            "criticalNotification": null,
+            "appletPopup": null,
+            "onScreenDisplay": null,
+            "comboBox": null,
+            "dndIcon": null,
+            "outline": null,
+            "inputMethod": null
+          },
+          "parentRuntimeId": null,
+          "desktopIds": [],
+          "activityIds": [],
+          "onAllActivities": true,
+          "onAllDesktops": true,
+          "geometry": {
+            "x": 10,
+            "y": 20,
+            "width": 800,
+            "height": 600
+          },
+          "screenId": null,
+          "minimized": false,
+          "fullscreen": false,
+          "skipTaskbar": false,
+          "excludeFromCapture": false,
+          "truncatedFields": []
+        }
+      ],
+      "applicationWindowIds": [
+        "window-2"
+      ],
+      "capabilities": {
+        "missingSignals": [],
+        "windowingSystem": "not-exposed-by-public-window-properties"
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+*~
+*.swp
+.DS_Store
+/build/
+/artifacts/
+__pycache__/
+
+/target/
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+/.direnv/
+/.local/
+
+# Local application state and acceptance captures
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.webm
+*.mp4
+/screenshots/
+/recordings/
+.pytest_cache/

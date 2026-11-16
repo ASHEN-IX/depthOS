@@ -1,13 +1,17 @@
 /* Read-only KWin scripting prototype. The private fixture supplies its observer.
  * Neither a live snapshot nor the retained QObject establishes user consent.
  */
-function createDenyOnlyAuthority(workspace, onInvalidated) {
+function createDenyOnlyAuthority(workspace, compositorIncarnation, onInvalidated) {
     const entries = new Map();
     const subscriptions = [];
+    const lifetime = new QTimer();
     let pending = null;
     let nextGeneration = 0;
     let topologyRevision = 1;
     let started = false;
+    lifetime.interval = 4000;
+    lifetime.singleShot = true;
+    lifetime.timeout.connect(() => invalidate("expired"));
 
     function connect(signal, callback, bag) {
         signal.connect(callback);
@@ -24,6 +28,7 @@ function createDenyOnlyAuthority(workspace, onInvalidated) {
         if (!pending) return;
         const { proposal } = pending;
         pending = null;
+        lifetime.stop();
         onInvalidated(reason, proposal);
     }
 
@@ -118,6 +123,8 @@ function createDenyOnlyAuthority(workspace, onInvalidated) {
             return {
                 nativeUuid: uuid,
                 generation: entry.generation,
+                trackerRuntimeId: "window-" + entry.generation,
+                compositorIncarnation,
                 topologyRevision,
                 sourceDesktop: membership[0].id,
                 destinationDesktop: destinationId,
@@ -135,6 +142,7 @@ function createDenyOnlyAuthority(workspace, onInvalidated) {
         if (!state) return null;
         const proposal = Object.freeze(Object.assign({ operation: "desktop-placement-preview" }, state));
         pending = { window, proposal };
+        lifetime.start();
         return proposal;
     }
 

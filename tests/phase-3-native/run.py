@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path
 from queue import Empty, Queue
+import select
 import signal
 import stat
 import subprocess
@@ -26,6 +27,7 @@ KWIN = "org.kde.KWin"
 ACTIVITIES = "org.kde.ActivityManager"
 VERSION = "6.8.3"
 SOCKET = "depthos-phase-3"
+ADAPTER = "phase3-native-preview"
 sys.path.insert(0, str(ROOT / "tests/integration/poc02e"))
 from process_inventory import members
 
@@ -52,15 +54,20 @@ def host_snapshot(bus):
     effects = call(bus, owner, "/Effects", PROPERTIES, "GetAll", "s", ("org.kde.kwin.Effects",))
     activity = call(bus, activity_owner, "/ActivityManager/Activities",
                     ACTIVITIES + ".Activities", "CurrentActivity")
+    activities = call(bus, activity_owner, "/ActivityManager/Activities",
+                      ACTIVITIES + ".Activities", "ListActivities")
     config = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
     return {
         "bus": bus_call(bus, "GetId"),
         "owner": owner,
+        "compositorPid": bus_call(bus, "GetConnectionUnixProcessID", "s", (owner,)),
         "desktopProperties": desktop_properties,
         "effects": effects,
         "activeOutput": call(bus, owner, "/KWin", "org.kde.KWin", "activeOutputName"),
         "activity": activity,
+        "activityOwner": activity_owner,
+        "activities": sorted(activities),
         "configContents": {name: (config / name).read_bytes() if (config / name).exists() else None
                            for name in ("kwinrc", "kglobalshortcutsrc", "kactivitymanagerdrc",
                                         "kscreenlockerrc", "plasma-workspace/env/depthos.sh")},
@@ -93,7 +100,7 @@ def wait_for(predicate, label):
     raise TimeoutError(label)
 
 
-def launch(run, expected_host_bus_id):
+def launch(run, expected_host_bus_id, adapter):
     env = {"PATH": "/usr/bin", "LANG": "C.UTF-8", "HOME": str(run / "home"),
            "XDG_RUNTIME_DIR": str(run / "runtime"), "XDG_CONFIG_HOME": str(run / "config"),
            "XDG_DATA_HOME": str(run / "data"), "XDG_CACHE_HOME": str(run / "cache"),
@@ -119,7 +126,7 @@ def launch(run, expected_host_bus_id):
                          for index in (1, 2))
     (run / "config/kwinrc").write_text(f"[Desktops]\nNumber=2\nRows=1\n{desktops}\n[Plugins]\nkwin4_effect_shapecornersEnabled=false\n")
     command = ["dbus-run-session", f"--config-file={config}", "--", sys.executable,
-               __file__, "--worker", str(run), expected_host_bus_id]
+               __file__, "--worker", str(run), expected_host_bus_id, str(adapter)]
     process = subprocess.Popen(command, env=env, start_new_session=True)
     try:
         rc = process.wait(timeout=75)
@@ -137,7 +144,7 @@ def launch(run, expected_host_bus_id):
     require(rc == 0, f"Private worker exit {rc}")
 
 
-def work(run, expected_host_bus_id):
+def work(run, expected_host_bus_id, adapter):
     runtime = run / "runtime"
     require(run.parent == Path("/tmp") and run.name.startswith("depthos-p3-") and
             run.resolve() == run, "Unrecognized private run directory")
@@ -158,7 +165,8 @@ def work(run, expected_host_bus_id):
     require(all(name not in os.environ for name in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY")),
             "Unexpected inherited display")
     bus = dbus.SessionBus()
-    require(bus_call(bus, "GetId") != expected_host_bus_id, "Private D-Bus identity required")
+    bus_id = bus_call(bus, "GetId")
+    require(bus_id != expected_host_bus_id, "Private D-Bus identity required")
     owners = {str(name) for name in bus_call(bus, "ListNames") if not name.startswith(":")}
     require(owners == {DAEMON}, "Private D-Bus must start empty")
 
@@ -192,7 +200,7 @@ def work(run, expected_host_bus_id):
                     record = records.get(timeout=max(0, deadline - time.monotonic()))
                 except Empty as error:
                     raise TimeoutError(f"Waiting for private KWin event {event}") from error
-                print(json.dumps(record), flush=True)
+                print(json.dumps({k: v for k, v in record.items() if k != "preview"}), flush=True)
                 if record["event"] == event:
                     return record
                 require(record["event"] != "compositor-exited", "Private compositor exited")
@@ -227,16 +235,19 @@ def work(run, expected_host_bus_id):
                           "authority": "deny-only"}), flush=True)
 
         apps = []
-        for index in range(3):
+        for index in range(5):
             output = stack.enter_context((run / f"app{index}.log").open("w"))
             process = subprocess.Popen([sys.executable, str(HERE / "fixture.py")],
                                        env={**os.environ, **env}, stdin=subprocess.PIPE,
-                                       stdout=output, stderr=subprocess.STDOUT, text=True)
+                                       stdout=subprocess.PIPE, stderr=output, text=True)
             stack.callback(process.stdin.close)
+            stack.callback(process.stdout.close)
             stack.callback(stop, process)
             apps.append(process)
         script = run / "authority-fixture.js"
+        incarnation = str(uuid.uuid4())
         script.write_text((ROOT / "experiments/kwin-authority/authority.js").read_text() +
+                          f"\nconst compositorIncarnation = {json.dumps(incarnation)};" +
                           f"\nconst fixturePids = {[app.pid for app in apps]};\n" +
                           (HERE / "probe.js").read_text())
         identifier = "depthos-phase-3-private-authority"
@@ -251,25 +262,53 @@ def work(run, expected_host_bus_id):
             require(all(record[key] is True for key in ("liveRevalidated", "foreignProposalRefused",
                         "pendingConflictRefused", "immutable", "distinctDesktops")),
                     "Private live snapshot validation failed")
+            require(record["incarnation"] == incarnation and
+                    record["runtimeId"] == f"window-{record['generation']}",
+                    "Missing fixture-local identity")
             return record
 
-        def assert_invalidated(reason):
+        def assert_invalidated(reason, capture):
             record = expect("invalidated")
-            require(record["reason"] == reason and record["staleRefused"] is True,
+            require(record["reason"] == reason and record["staleRefused"] is True and
+                    record["generation"] == capture["generation"],
                     f"Expected live proposal invalidation due to {reason}")
 
         def show(process):
             process.stdin.write("show\n")
             process.stdin.flush()
 
+        def view_command(process, command, expected):
+            process.stdin.write(json.dumps(command) + "\n")
+            process.stdin.flush()
+            require(select.select([process.stdout], [], [], 6)[0], "Private fixture view timeout")
+            result = json.loads(process.stdout.readline())
+            require(result["event"] == expected, f"Expected private fixture view {expected}")
+            return result
+
+        def present(process, capture):
+            payload = {"busId": str(uuid.UUID(str(bus_id))), "uniqueOwner": str(owner),
+                       "uid": os.getuid(), "preview": capture["preview"]}
+            denial = subprocess.run([adapter], input=json.dumps(payload), text=True,
+                                    capture_output=True, check=True, timeout=3)
+            projected = json.loads(denial.stdout)
+            require(projected == {"authorization": "UnverifiedInteraction",
+                                  "preview": capture["preview"]},
+                    "Rust preview attachment changed placement or did not refuse")
+            result = view_command(process, {"preview": projected["preview"]}, "presented")
+            expected = [f"From {capture['preview']['sourceDesktop']}",
+                        f"To {capture['preview']['destinationDesktop']}",
+                        f"Activity {capture['preview']['activity']} stays the same"]
+            require(result["labels"] == expected, "View labels diverged from the native snapshot")
+            print("Private native preview presented after Rust refusal", flush=True)
+
         show(apps[0])
         first = check_capture()
         show(apps[1])
-        assert_invalidated("focus")
+        assert_invalidated("focus", first)
         second = check_capture()
         require(second["generation"] > first["generation"], "Native object generation reused")
         stop(apps[1])
-        assert_invalidated("window-removed")
+        assert_invalidated("window-removed", second)
         expect("fixture-removed")
         stop(apps[0])
         expect("fixture-removed")
@@ -277,6 +316,24 @@ def work(run, expected_host_bus_id):
         show(apps[2])
         third = check_capture()
         require(third["generation"] > second["generation"], "Native object generation reused")
+        present(apps[2], third)
+        view_command(apps[2], {"dismiss": True}, "cancelled")
+        assert_invalidated("window-removed", third)
+        expect("fixture-removed")
+        require(apps[2].wait(timeout=3) == 0, "Cancelled fixture did not close cleanly")
+
+        show(apps[3])
+        fourth = check_capture()
+        present(apps[3], fourth)
+        assert_invalidated("expired", fourth)
+        require(view_command(apps[3], {"invalidate": True}, "hidden")["empty"],
+                "Expired native preview remained visible")
+        stop(apps[3])
+        expect("fixture-removed")
+
+        show(apps[4])
+        fifth = check_capture()
+        present(apps[4], fifth)
         desktop_state = call(bus, owner, desktops_path, PROPERTIES, "GetAll", "s",
                              (desktops_interface,))
         require(desktop_state["current"] == desktop_initial["current"],
@@ -286,12 +343,14 @@ def work(run, expected_host_bus_id):
         # Remove only the unused fixture destination. The sole owned window remains
         # on the private current desktop. No window placement or focus setter is used.
         call(bus, owner, desktops_path, desktops_interface, "removeDesktop", "s", (unused[0],))
-        assert_invalidated("topology")
+        assert_invalidated("topology", fifth)
+        require(view_command(apps[4], {"invalidate": True}, "hidden")["empty"],
+                "Stale topology preview remained visible")
         desktop_final = call(bus, owner, desktops_path, PROPERTIES, "GetAll", "s",
                              (desktops_interface,))
         require(desktop_final["count"] == 1 and desktop_final["current"] == desktop_state["current"],
                 "Unexpected post-test fixture desktop state")
-        stop(apps[2])
+        stop(apps[4])
         expect("fixture-removed")
         call(bus, owner, "/Scripting", "org.kde.kwin.Scripting", "unloadScript", "s", (identifier,))
 
@@ -310,12 +369,16 @@ def work(run, expected_host_bus_id):
 
 def main():
     os.umask(0o077)
+    subprocess.run(["cargo", "build", "--locked", "--offline", "--example", ADAPTER],
+                   cwd=ROOT, check=True)
+    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", str(ROOT / "target")))
+    adapter = (ROOT / target_dir / "debug" / "examples" / ADAPTER).resolve()
     host_bus = dbus.SessionBus()
     before = host_snapshot(host_bus)
     with tempfile.TemporaryDirectory(prefix="depthos-p3-", dir="/tmp") as directory:
         run = Path(directory)
         try:
-            launch(run, str(before["bus"]))
+            launch(run, str(before["bus"]), adapter)
         except Exception:
             for output in sorted(run.glob("*.log")):
                 print(f"\n{output.name}\n{output.read_text()[-3500:]}", file=sys.stderr)
@@ -323,12 +386,11 @@ def main():
         finally:
             after = host_snapshot(host_bus)
             changed = sorted(key for key, value in before.items() if after[key] != value)
-            if "desktopProperties" in changed:
-                before_desktops, after_desktops = (snapshot["desktopProperties"]
-                                                   for snapshot in (before, after))
-                changed.extend(f"desktopProperties.{key}" for key in
-                               sorted(set(before_desktops) | set(after_desktops))
-                               if before_desktops.get(key) != after_desktops.get(key))
+            for field in ("desktopProperties", "effects"):
+                if field in changed:
+                    previous, current = before[field], after[field]
+                    changed.extend(f"{field}.{key}" for key in sorted(set(previous) | set(current))
+                                   if previous.get(key) != current.get(key))
             require(not changed, f"Host-state snapshot changed: {changed}")
             print("Host-state snapshot matched", flush=True)
     require(not run.exists(), "Private runtime and XDG roots remained after cleanup")
@@ -336,8 +398,8 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 4 and sys.argv[1] == "--worker":
-        work(Path(sys.argv[2]), sys.argv[3])
+    if len(sys.argv) == 5 and sys.argv[1] == "--worker":
+        work(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]))
     elif len(sys.argv) == 1:
         main()
     else:

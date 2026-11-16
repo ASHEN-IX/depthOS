@@ -1,8 +1,9 @@
 // Appended only to the private fixture's script. No test approval path.
 (function () {
     const report = payload => print("DEPTHOS_AUTHORITY " + JSON.stringify(payload));
-    const authority = createDenyOnlyAuthority(workspace, (reason, proposal) =>
-        report({ event: "invalidated", reason, staleRefused: !authority.revalidate(proposal) }));
+    const authority = createDenyOnlyAuthority(workspace, compositorIncarnation, (reason, proposal) =>
+        report({ event: "invalidated", reason, generation: proposal.generation,
+            staleRefused: !authority.revalidate(proposal) }));
     const seen = new Set();
 
     function captureFixture() {
@@ -20,7 +21,14 @@
             pendingConflictRefused: authority.capture(window, destinations[0].id) === null,
             immutable: Object.isFrozen(proposal),
             distinctDesktops: proposal.sourceDesktop !== proposal.destinationDesktop,
-            generation: proposal.generation
+            generation: proposal.generation,
+            incarnation: proposal.compositorIncarnation,
+            runtimeId: proposal.trackerRuntimeId,
+            preview: {
+                sourceDesktop: proposal.sourceDesktop,
+                destinationDesktop: proposal.destinationDesktop,
+                activity: proposal.activity
+            }
         });
     }
 

@@ -68,7 +68,8 @@ public:
 
     bool prepare(const World &world, QObject *object, const std::string &destination,
                  Clock::time_point now = Clock::now()) {
-        if (!onThread() || pending_ || retired_ || serial_ == std::numeric_limits<std::uint64_t>::max())
+        if (!onThread() || pending_ || retired_ || serial_ == std::numeric_limits<std::uint64_t>::max() ||
+            now > Clock::time_point::max() - std::chrono::seconds(5))
             return false;
         const Window *window = unique(world, object);
         if (!window || !live(world, *window, destination)) return false;
@@ -113,8 +114,8 @@ public:
         pending_.reset();
         retired_ = true;
     }
-    std::uint64_t serial() const { return serial_; }
-    std::uint64_t count() const { return count_; }
+    std::uint64_t serial() const { return onThread() ? serial_ : 0; }
+    std::uint64_t count() const { return onThread() ? count_ : 0; }
 
 private:
     bool onThread() const { return QThread::currentThread() == thread_; }
@@ -133,10 +134,12 @@ private:
         }
         return found;
     }
-    static bool live(const World &world, const Window &window, const std::string &destination) {
+    bool live(const World &world, const Window &window, const std::string &destination) const {
         return world.alive && world.locked.has_value() && !*world.locked &&
-            window.object && window.eligible && world.focus == window.object &&
-            world.prompt && world.promptOwned && !world.seat.empty() &&
+            window.object && window.object->thread() == thread_ &&
+            window.eligible && world.focus == window.object &&
+            world.prompt && world.prompt->thread() == thread_ &&
+            world.promptOwned && !world.seat.empty() &&
             world.compositor && world.coordinator && world.observer && world.topology &&
             window.activity == world.activity && !world.activity.empty() &&
             window.desktop == world.currentDesktop &&

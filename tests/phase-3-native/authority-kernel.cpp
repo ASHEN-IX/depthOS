@@ -1,5 +1,6 @@
 #include "authority.h"
 #include <QCoreApplication>
+#include <QMetaObject>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -104,6 +105,55 @@ int main(int argc, char **argv) {
               f.now + std::chrono::seconds(5)) == Result::Denied, "deadline inclusive");
         check(f.kernel.count() == 0, "expired count");
         std::cout << "PASS synthetic steady-clock exact expiry\n";
+    }
+    {
+        QObject window, prompt;
+        World world;
+        world.windows.push_back(Window{&window, "uuid"});
+        world.focus = &window;
+        world.prompt = &prompt;
+        Kernel kernel;
+        check(!kernel.prepare(world, &window, "destination", Kernel::Clock::time_point::max()),
+              "overflowing deadline accepted");
+        const auto latest = Kernel::Clock::time_point::max() - std::chrono::seconds(5);
+        check(kernel.prepare(world, &window, "destination", latest), "latest safe deadline");
+        check(kernel.syntheticConfirm(world, kernel.serial(), false, latest) == Result::Counted,
+              "safe extreme time refused");
+        std::cout << "PASS synthetic deadline overflow refused and safe boundary accepted\n";
+    }
+    for (bool movePrompt : {false, true}) {
+        Fixture f;
+        QThread other;
+        other.start();
+        QThread *owner = QThread::currentThread();
+        QObject *moved = movePrompt ? &f.prompt : f.window.get();
+        check(moved->moveToThread(&other), "move object to foreign thread");
+        const Result result = f.confirm();
+        Kernel fresh;
+        const bool prepared = fresh.prepare(f.world, f.window.get(), "destination", f.now);
+        check(QMetaObject::invokeMethod(moved, [&] {
+            check(moved->moveToThread(owner), "restore object affinity");
+        }, Qt::BlockingQueuedConnection), "restore invocation");
+        other.quit();
+        check(other.wait(3000), "foreign thread cleanup");
+        check(result == Result::Denied && f.kernel.count() == 0 && !prepared,
+              "foreign QObject affinity accepted");
+        check(f.confirm() == Result::Denied, "affinity restoration revived consumed proposal");
+        std::cout << "PASS synthetic foreign " << (movePrompt ? "prompt" : "window")
+                  << " affinity denied at prepare and consume\n";
+    }
+    for (bool lockTransition : {false, true}) {
+        Fixture f;
+        // A future observer must call cancel on each transition, even when
+        // the subsequent snapshot returns to identical values.
+        if (lockTransition) f.world.locked = true;
+        else f.world.focus = nullptr;
+        check(f.kernel.cancel(), "transition invalidation");
+        f.world.locked = false;
+        f.world.focus = f.window.get();
+        check(f.confirm() == Result::Denied && f.kernel.count() == 0,
+              "restored state revived invalidated proposal");
+        std::cout << "PASS synthetic explicit transition cancellation survives state restoration\n";
     }
     {
         Fixture f;

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise read-only window tracking on owned surfaces in virtual KWin 6.8.3."""
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 import re
@@ -26,6 +27,8 @@ PROPERTIES = DAEMON + ".Properties"
 KWIN = "org.kde.KWin"
 ACTIVITIES = "org.kde.ActivityManager"
 VERSION = "6.8.3"
+KWIN_EXE = Path("/usr/bin/kwin_wayland")
+KWIN_SHA256 = "33350d420b7b196c1e1f90ffa8c1280b4b3102d4e4b60e1929bad525be93df5e"
 SOCKET = "depthos-phase-3"
 ADAPTER = "phase3-native-preview"
 sys.path.insert(0, str(ROOT / "tests/integration/poc02e"))
@@ -35,6 +38,17 @@ from process_inventory import members
 def require(condition, reason):
     if not condition:
         raise RuntimeError(reason)
+
+
+def installed_kwin_identity():
+    require(KWIN_EXE.resolve(strict=True) == KWIN_EXE, "Unexpected KWin executable path")
+    with KWIN_EXE.open("rb") as executable:
+        info = os.fstat(executable.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022,
+                "Unexpected KWin executable ownership or permissions")
+        digest = hashlib.file_digest(executable, "sha256").hexdigest()
+    require(digest == KWIN_SHA256, "KWin executable build has not been qualified")
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def call(bus, service, path, interface, method, signature="", args=()):
@@ -170,12 +184,13 @@ def work(run, expected_host_bus_id, adapter):
     owners = {str(name) for name in bus_call(bus, "ListNames") if not name.startswith(":")}
     require(owners == {DAEMON}, "Private D-Bus must start empty")
 
-    local = subprocess.check_output(["kwin_wayland", "--version"], text=True).strip()
+    installed_identity = installed_kwin_identity()
+    local = subprocess.check_output([str(KWIN_EXE), "--version"], text=True).strip()
     require(local == f"kwin {VERSION}", "KWin version has not been qualified")
     records = Queue()
 
     with ExitStack() as stack:
-        kwin = subprocess.Popen(["kwin_wayland", "--virtual", "--no-lockscreen",
+        kwin = subprocess.Popen([str(KWIN_EXE), "--virtual", "--no-lockscreen",
                                  "--no-global-shortcuts", "--socket", SOCKET, "--width", "800",
                                  "--height", "600"], text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT)
@@ -208,6 +223,7 @@ def work(run, expected_host_bus_id, adapter):
         owner = bus_call(bus, "GetNameOwner", "s", (KWIN,))
         require(bus_call(bus, "GetConnectionUnixProcessID", "s", (owner,)) == kwin.pid,
                 "Private KWin PID mismatch")
+        require(installed_kwin_identity() == installed_identity, "KWin executable changed during launch")
         socket = runtime / SOCKET
         require(stat.S_ISSOCK(socket.stat().st_mode), "Private Wayland socket missing")
         support = call(bus, owner, "/KWin", "org.kde.KWin", "supportInformation")
@@ -229,7 +245,7 @@ def work(run, expected_host_bus_id, adapter):
             call(bus, ACTIVITIES, path, interface, "SetCurrentActivity", "s", (activity,))
         require(len(call(bus, ACTIVITIES, path, interface, "ListActivities")) == 1,
                 "Expected one private Activity")
-        print(json.dumps({"isolatedKWin": VERSION, "desktops": 2, "activities": 1,
+        print(json.dumps({"isolatedKWin": VERSION, "executableSha256": KWIN_SHA256, "desktops": 2, "activities": 1,
                           "authority": "deny-only"}), flush=True)
 
         apps = []

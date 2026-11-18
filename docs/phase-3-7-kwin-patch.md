@@ -19,6 +19,16 @@ cmake -S . -B /path/to/private/build -G Ninja -DBUILD_TESTING=OFF \
 cmake --build /path/to/private/build --target kwin_wayland eis
 ```
 
+The campaign used CMake 4.2.3 (PyPI wheel SHA-256 `8e91b381aaea3c47110583dccc52f4562333d1accdbb806939f953c16e74ec0a`), Ninja 1.13.2 and privately extracted Arch build dependencies verified against the local package database. Release used `-O0 -g0 -DNDEBUG`. The targeted build disabled X11, KCMs, runners, Overview, decorations and upstream tests; screen locker, Activities and EIS were built. The checked-in patch applied cleanly to a fresh extraction, and the reconstructed source matched the configured build source file for file. A separate configuration without an experiment switch resolved the option to `OFF` and generated no experiment compile definition.
+
+| Private artifact | SHA-256 | ELF build ID |
+| --- | --- | --- |
+| `kwin_wayland` | `90dde25cd39f0a63c7fd8cf17187d06fbd228f3953d6d6a9e78b1bfadbe244d8` | `ad7432a860e6ddcb5039b051d9e430f7b39bb751` |
+| `libkwin.so.6.8.3` | `2d82291e55f3d14985c69473f864f41bc04fa158207a8da8abf0a65c65f704dc` | `52a1b0823e3e76257c0a11fa1402523217efec7b` |
+| `eis.so` (compile only) | `ef3c59ec7a56be528a00d76a769efa69c42dfb60a61a67b3dd311e325993142a` | `5b2801b19126345d9689efaf7442ef8c7a506c31` |
+
+The KWin patch SHA-256 is `ad857b954b6dfa229c52678633f2944ba594da66c0bebabc43c8bbced1effe16`. Restricted raw build and reconstruction evidence is in `artifacts/phase-3-7/lead-build/`.
+
 ## Patch structure
 
 - `CMakeLists.txt` switches the experiment on explicitly. `src/CMakeLists.txt` supplies the executable's two private library dependencies when their KWin features are enabled.

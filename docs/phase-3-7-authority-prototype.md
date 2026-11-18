@@ -14,6 +14,8 @@ The private internal prompt is an opaque fixture-owned QObject with an exact ide
 
 The native observer is independent of the existing deny-only JS/Rust/QML view and the Rust `Authorizer`. Clearing a proposal in KWin and Rust refusing claims are separate facts; a normal view cannot call this prototype's test turn.
 
+The reviewed private KWin run observed lock enabled and unlocked for the owned fixture, counted its internal token once, and refused the second call with that token. The test established synchronous fixture behavior in the running compositor. A visible protected prompt, actual lock transitions and qualified human input remain unverified.
+
 ## Coordinator lease design
 
 A future positive authority needs one party to own the entire checkpoint throughout final validation. The safest next experiment is to give the compositor a narrowly scoped, immutable policy checkpoint backed by an explicit Rust lease. Acquisition in Rust freezes the exact coordinator incarnation/epoch, revision, observer stream incarnation, policy and request identity; it returns an expiring or revocable reservation whose operation and audience are exact. The compositor must hold that reservation in its own turn and locally revalidate the complete live native state. A lease client must never treat a timeout or disconnect as permission to commit.

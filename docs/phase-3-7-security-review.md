@@ -46,8 +46,17 @@ The reviewer corrected the launcher by copying the checked private executable in
 
 The reviewer also added deterministic tests for missing retirement, duplicate retirement, replacement of pending proposals and malformed synthetic replay outcomes in the native transcript. A native run must pair each pending observation with one terminal log event before accepting the integration result. The source turn itself supplies the scoped synchronous guarantee. Logs only support runtime coverage of that implementation.
 
+| Additional scenario | Classification | Evidence and limit |
+| --- | --- | --- |
+| Missing prompt and unknown lock | Verified native denial | The built compositor retired observed proposals without a synthetic turn in deny-only mode. |
+| Native focus loss, window eligibility change, deadline and destination removal | Verified native denial | The private compositor retired pending observations. Exact restoration, UUID collision and restart fencing retain the model-only coverage above. |
+| Internal fixture prompt, unlocked state and repeat token | Verified synthetic behavior | The built compositor counted once and denied the identical token on the immediately following call. No ordinary event supplied the token. |
+| Forged scripts or same-UID calls reaching native approval | Unsupported | The test turn exposes no approval binding. The normal preview script and production read-only interface were exercised; extension integrity against a hostile local process was not established. |
+| Actual lock transition, wrong native seat | Unsupported | Source wiring and single-seat fixture observations do not establish live transition or multiple-seat behavior. |
+| Virtual/EIS, remote/portal, accessibility, unknown and local physical input | Unsupported | Pre-Qt classification hooks were reviewed and compiled; the private runtime tests did not exercise those sources. No category can authorize. |
+
 ## Final scope
 
-**PHASE 3.7 PARTIALLY VERIFIED** is appropriate when the final native runtime passes. Native object retention, selected invalidation transitions and one internal synthetic consume are demonstrated. Physical input integrity, remote/EIS/accessibility ingress policy, protected rendered prompt ownership, actual lock transitions, multi-seat behavior and a coordinator lease remain open. The threat cases involving ptrace, native injection, writable compositor startup or executable replacement require a deployment process-integrity policy. The standalone timing, clock-overflow, wrong-thread, uncertainty and race tests retain their model-only classification.
+**PHASE 3.7 PARTIALLY VERIFIED.** The final private runtime demonstrated native object retention, selected invalidation transitions and one internal synthetic consume. Physical input integrity, remote/EIS/accessibility ingress policy, protected rendered prompt ownership, actual lock transitions, multi-seat behavior and a coordinator lease remain open. The threat cases involving ptrace, native injection, writable compositor startup or executable replacement require a deployment process-integrity policy. The standalone timing, clock-overflow, wrong-thread, uncertainty and race tests retain their model-only classification.
 
 Rollback uses the original reviewed Phase 3.6 checkout or reverses the Phase 3.7 commits in the independent repository. Private binaries, libraries and core evidence remain under ignored artifacts. The original damaged Codex ref stays preserved in its source repository.

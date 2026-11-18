@@ -70,6 +70,18 @@ def experiment_file(path, digest, name):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
+def verify_private_libraries(pid, library, digest):
+    maps = Path(f"/proc/{pid}/maps").read_text()
+    mapped = {Path(fields[5]) for line in maps.splitlines()
+              if len(fields := line.split(maxsplit=5)) == 6 and fields[5].startswith("/")}
+    kwin_libraries = {path.resolve() for path in mapped if path.name.startswith("libkwin.so")}
+    require(kwin_libraries == {library.resolve()} and hash_file(library) == digest,
+            "Private compositor library identity mismatch")
+    require(not any("/qt6/plugins/kwin/" in str(path)
+                    or "/qt6/qml/org/kde/kwin/" in str(path) for path in mapped),
+            "Installed native KWin plugin loaded in private build")
+
+
 def hash_file(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -217,6 +229,24 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
         _, path, expected_digest = experiment
         executable = Path(path)
         executable_identity = experiment_file(executable, expected_digest, "kwin_wayland")
+        # Limit Qt's native plugin search before KWin constructs its plugin manager.
+        # An adjacent qt.conf affects this copied executable only.
+        original_executable = executable
+        private_binary = run / "compositor"
+        private_binary.mkdir(mode=0o700)
+        executable = private_binary / "kwin_wayland"
+        shutil.copyfile(original_executable, executable)
+        executable.chmod(0o700)
+        require(hash_file(executable) == expected_digest, "Private executable copy mismatch")
+        plugin_root = run / "qt-plugins"
+        plugin_root.mkdir(mode=0o700)
+        (private_binary / "qt.conf").write_text(
+            f"[Paths]\nPrefix=/usr\nPlugins={plugin_root}\n"
+            "QmlImports=/usr/lib/qt6/qml\n")
+        compositor_env["QT_PLUGIN_PATH"] = str(plugin_root)
+        private_library = original_executable.parent / "libkwin.so.6.8.3"
+        require(private_library.is_file(), "Private KWin library missing")
+        library_digest = hash_file(private_library)
     else:
         executable_identity = installed_kwin_identity()
     if experiment and experiment[0] == "plugin":
@@ -235,6 +265,7 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
     local = subprocess.check_output([str(executable), "--version"], text=True).strip()
     require(local == f"kwin {VERSION}", "KWin version has not been qualified")
     records = Queue()
+    native_records = []
 
     with ExitStack() as stack:
         env = {"WAYLAND_DISPLAY": SOCKET, "QT_QPA_PLATFORM": "wayland"}
@@ -266,6 +297,7 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
                 for line in kwin.stdout:
                     log.write(line)
                     if experiment and "DEPTHOS_NATIVE37 " in line:
+                        native_records.append(line.split("DEPTHOS_NATIVE37 ", 1)[1].strip())
                         print(line[line.index("DEPTHOS_NATIVE37 "):].strip(), flush=True)
                     if "DEPTHOS_AUTHORITY " in line:
                         records.put(json.loads(line.split("DEPTHOS_AUTHORITY ", 1)[1]))
@@ -292,10 +324,13 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
         if executable == KWIN_EXE:
             require(installed_kwin_identity() == executable_identity, "KWin executable changed during launch")
         else:
-            require(experiment_file(executable, expected_digest, "kwin_wayland") == executable_identity,
+            require(experiment_file(original_executable, expected_digest, "kwin_wayland") == executable_identity,
                     "Private KWin executable changed during launch")
+            require(hash_file(executable) == expected_digest, "Private executable copy changed")
             require(Path(f"/proc/{kwin.pid}/exe").resolve(strict=True) == executable,
                     "Private KWin running executable mismatch")
+            verify_private_libraries(kwin.pid, private_library, library_digest)
+            print("Private running executable and libkwin mapping verified", flush=True)
         socket = runtime / SOCKET
         require(stat.S_ISSOCK(socket.stat().st_mode), "Private Wayland socket missing")
         support = call(bus, owner, "/KWin", "org.kde.KWin", "supportInformation")
@@ -407,6 +442,17 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
         stop(apps[3])
         expect("fixture-removed", pid=apps[3].pid)
 
+        if synthetic:
+            # Extra owned surfaces exercise focus retirement after the first
+            # internal count, without changing the accepted preview sequence.
+            for index in (5, 6):
+                prior = sum(line.startswith("pending native-match ") for line in native_records)
+                extra = own_surface(index)
+                show(extra)
+                wait_for(lambda: sum(line.startswith("pending native-match ")
+                                     for line in native_records) > prior,
+                         "native extra owned-surface proposal")
+
         show(apps[4])
         fifth = check_capture(apps[4])
         present(apps[4], fifth)
@@ -416,7 +462,7 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
                 "Fixture current desktop changed before topology exercise")
         unused = [row[1] for row in desktop_state["desktops"] if row[1] != desktop_state["current"]]
         require(len(unused) == 1, "Expected one unused private desktop")
-        # Remove only the unused fixture destination. The sole owned window remains
+        # Remove only the unused fixture destination. All owned surfaces remain
         # on the private current desktop. No window placement or focus setter is used.
         call(bus, owner, desktops_path, desktops_interface, "removeDesktop", "s", (unused[0],))
         assert_invalidated("topology", fifth)
@@ -437,6 +483,8 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
             env={**os.environ, **env, "QT_QUICK_BACKEND": "software"},
             check=True, timeout=20,
         )
+        if executable != KWIN_EXE:
+            verify_private_libraries(kwin.pid, private_library, library_digest)
         stop(kwin)
         reader.join(timeout=3)
         require(not reader.is_alive(), "Private compositor log reader did not stop")
@@ -445,6 +493,7 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
                       for line in (run / "kwin.log").read_text().splitlines()
                       if "DEPTHOS_NATIVE37 " in line]
             require(native.count("ready deny-only") == 1, "Private native component did not attach exactly once")
+            verify_native_lifecycle(native)
             captures = [line for line in native if line.startswith("pending native-match ")]
             require(len(captures) >= 4, "Not enough exact native snapshots")
             turns = [line for line in native if line.startswith("synthetic ")]
@@ -467,6 +516,22 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
                   f" {'one fixture-only count' if synthetic else 'deny-only'})",
                   flush=True)
     require(not socket.exists(), "Private Wayland socket remained after KWin teardown")
+
+
+def verify_native_lifecycle(native):
+    pending = False
+    for line in native:
+        if line.startswith("pending native-match "):
+            require(not pending, "Native proposal replaced without retirement")
+            pending = True
+        elif line.startswith("retired "):
+            require(pending, "Native retirement without pending proposal")
+            pending = False
+        elif line.startswith("synthetic "):
+            require(pending and line == "synthetic first=counted replay=denied count=1",
+                    "Unexpected synthetic consumption sequence")
+            pending = False
+    require(not pending, "Native proposal survived compositor teardown")
 
 
 def main(experiment=()):

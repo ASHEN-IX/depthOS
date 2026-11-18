@@ -1,0 +1,9 @@
+# Phase 3.7 Git integrity preflight
+
+The canonical main is `6543b65213f24a733012ac5db50e69ed382d1cfb`. Accepted Phase 3 is `f73226097aced5f414dc1d1a901debb3eab510fc`. The clean Phase 3.6 checkout actually ends at `4edfed832e08a41308772830f47824a3e42ee599`, after implementation commit `145cfde8a75755470f42424220684acc3991e0c8`. Phase 3.7 uses that reviewed tip.
+
+The shared repository still fails `git fsck --full --strict` on one zero-byte file under `refs/codex/turn-diffs/checkpoints/`. The exact path and diagnostics are in restricted local evidence. Git prints an all-zero invalid pointer because the ref has no parseable target. There is no object identified by that pointer and no truncated loose object reported. The namespace is Codex tool metadata; it is not one of the application branch refs. Two dangling trees are also reported. No ref or original Git store was changed.
+
+The lead inventoried the original worktrees, refs and shared metadata before implementation. A Git bundle selected only the three named application branch refs. Bundle verification reported complete history. The bundle was fetched into a newly initialized independent repository, with its Phase 3.6 tip checked out as `codex/phase-3-7`. No original object directories, alternates or checkpoint refs were copied. Strict full fsck passed in the independent repository, verifying the imported reachable commit, tree and blob graph. Recursive ls-tree manifests (including mode and blob ID) match at the Phase 3.6 tip. Original checkouts stay in place.
+
+Restricted raw evidence: `artifacts/phase-3-7/git-preflight/` (bundle, ref/worktree inventories, empty-ref and fsck diagnostics, source and imported tree manifests). To roll back, use the original Phase 3.6 checkout or revert only Phase 3.7 commits in the independent repository. Leave the original checkpoint and unrelated work intact.

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise read-only window tracking on owned surfaces in virtual KWin 6.8.3."""
+import argparse
 from contextlib import ExitStack
 import hashlib
 import json
@@ -8,6 +9,7 @@ import re
 from pathlib import Path
 from queue import Empty, Queue
 import select
+import shutil
 import signal
 import stat
 import subprocess
@@ -31,6 +33,10 @@ KWIN_EXE = Path("/usr/bin/kwin_wayland")
 KWIN_SHA256 = "33350d420b7b196c1e1f90ffa8c1280b4b3102d4e4b60e1929bad525be93df5e"
 SOCKET = "depthos-phase-3"
 ADAPTER = "phase3-native-preview"
+EXPERIMENT_ROOT = ROOT / "artifacts/phase-3-7"
+EXPERIMENT_PLUGIN_ID = "depthos-phase37-private"
+LIBKWIN = Path("/usr/lib/libkwin.so.6")
+LIBKWIN_SHA256 = "25259a191bc4c0e2e0eae74a5b4ec34b68890564b157884b7c00fc5bea9155d1"
 sys.path.insert(0, str(ROOT / "tests/integration/poc02e"))
 from process_inventory import members
 
@@ -49,6 +55,24 @@ def installed_kwin_identity():
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
     require(digest == KWIN_SHA256, "KWin executable build has not been qualified")
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def experiment_file(path, digest, name):
+    require(re.fullmatch(r"[0-9a-f]{64}", digest), "Expected experiment SHA-256")
+    require(path.is_absolute() and path == path.resolve(strict=True)
+            and path.is_relative_to(EXPERIMENT_ROOT) and path.name == name,
+            "Experiment file must be under private artifacts")
+    with path.open("rb") as stream:
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                and not info.st_mode & 0o6022, "Unsafe experiment file mode or owner")
+        require(hashlib.file_digest(stream, "sha256").hexdigest() == digest, "Experiment hash mismatch")
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def hash_file(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def call(bus, service, path, interface, method, signature="", args=()):
@@ -114,7 +138,7 @@ def wait_for(predicate, label):
     raise TimeoutError(label)
 
 
-def launch(run, expected_host_bus_id, adapter):
+def launch(run, expected_host_bus_id, adapter, experiment=()):
     env = {"PATH": "/usr/bin", "LANG": "C.UTF-8", "HOME": str(run / "home"),
            "XDG_RUNTIME_DIR": str(run / "runtime"), "XDG_CONFIG_HOME": str(run / "config"),
            "XDG_DATA_HOME": str(run / "data"), "XDG_CACHE_HOME": str(run / "cache"),
@@ -140,7 +164,7 @@ def launch(run, expected_host_bus_id, adapter):
                          for index in (1, 2))
     (run / "config/kwinrc").write_text(f"[Desktops]\nNumber=2\nRows=1\n{desktops}\n[Plugins]\nkwin4_effect_shapecornersEnabled=false\n")
     command = ["dbus-run-session", f"--config-file={config}", "--", sys.executable,
-               __file__, "--worker", str(run), expected_host_bus_id, str(adapter)]
+               __file__, "--worker", str(run), expected_host_bus_id, str(adapter), *experiment]
     process = subprocess.Popen(command, env=env, start_new_session=True)
     try:
         rc = process.wait(timeout=75)
@@ -158,7 +182,7 @@ def launch(run, expected_host_bus_id, adapter):
     require(rc == 0, f"Private worker exit {rc}")
 
 
-def work(run, expected_host_bus_id, adapter):
+def work(run, expected_host_bus_id, adapter, experiment=()):
     runtime = run / "runtime"
     require(run.parent == Path("/tmp") and run.name.startswith("depthos-p3-") and
             run.resolve() == run, "Unrecognized private run directory")
@@ -184,16 +208,56 @@ def work(run, expected_host_bus_id, adapter):
     owners = {str(name) for name in bus_call(bus, "ListNames") if not name.startswith(":")}
     require(owners == {DAEMON}, "Private D-Bus must start empty")
 
-    installed_identity = installed_kwin_identity()
-    local = subprocess.check_output([str(KWIN_EXE), "--version"], text=True).strip()
+    executable, expected_digest = KWIN_EXE, KWIN_SHA256
+    compositor_env = os.environ.copy()
+    require(not experiment or (len(experiment) == 3 and experiment[0] in ("build", "synthetic", "plugin")),
+            "Unexpected experiment mode")
+    synthetic = bool(experiment and experiment[0] == "synthetic")
+    if experiment and experiment[0] in ("build", "synthetic"):
+        _, path, expected_digest = experiment
+        executable = Path(path)
+        executable_identity = experiment_file(executable, expected_digest, "kwin_wayland")
+    else:
+        executable_identity = installed_kwin_identity()
+    if experiment and experiment[0] == "plugin":
+        _, path, digest = experiment
+        plugin = Path(path)
+        experiment_file(plugin, digest, f"{EXPERIMENT_PLUGIN_ID}.so")
+        require(hash_file(LIBKWIN) == LIBKWIN_SHA256, "Unqualified plugin ABI")
+        plugin_root = run / "plugins"
+        destination = plugin_root / "kwin/plugins" / plugin.name
+        destination.parent.mkdir(parents=True)
+        shutil.copyfile(plugin, destination)
+        require(hash_file(destination) == digest, "Private plugin copy hash mismatch")
+        compositor_env["QT_PLUGIN_PATH"] = str(plugin_root)
+        with (run / "config/kwinrc").open("a") as settings:
+            settings.write(f"{EXPERIMENT_PLUGIN_ID}Enabled=true\n")
+    local = subprocess.check_output([str(executable), "--version"], text=True).strip()
     require(local == f"kwin {VERSION}", "KWin version has not been qualified")
     records = Queue()
 
     with ExitStack() as stack:
-        kwin = subprocess.Popen([str(KWIN_EXE), "--virtual", "--no-lockscreen",
+        env = {"WAYLAND_DISPLAY": SOCKET, "QT_QPA_PLATFORM": "wayland"}
+
+        def own_surface(index):
+            output = stack.enter_context((run / f"app{index}.log").open("w"))
+            process = subprocess.Popen([sys.executable, str(HERE / "fixture.py")],
+                                       env={**os.environ, **env}, stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=output, text=True)
+            stack.callback(process.stdin.close)
+            stack.callback(process.stdout.close)
+            stack.callback(stop, process)
+            return process
+
+        # The child waits for "show" before connecting to the private socket.
+        apps = [own_surface(0)] if synthetic else []
+        if synthetic:
+            compositor_env["KWIN_DEPTHOS_TEST_OWNED_PID"] = str(apps[0].pid)
+        locker = [] if synthetic else ["--no-lockscreen"]
+        kwin = subprocess.Popen([str(executable), "--virtual", *locker,
                                  "--no-global-shortcuts", "--socket", SOCKET, "--width", "800",
                                  "--height", "600"], text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT)
+                                stderr=subprocess.STDOUT, env=compositor_env)
         stack.callback(kwin.stdout.close)
         stack.callback(stop, kwin)
 
@@ -201,6 +265,8 @@ def work(run, expected_host_bus_id, adapter):
             with (run / "kwin.log").open("w") as log:
                 for line in kwin.stdout:
                     log.write(line)
+                    if experiment and "DEPTHOS_NATIVE37 " in line:
+                        print(line[line.index("DEPTHOS_NATIVE37 "):].strip(), flush=True)
                     if "DEPTHOS_AUTHORITY " in line:
                         records.put(json.loads(line.split("DEPTHOS_AUTHORITY ", 1)[1]))
             records.put({"event": "compositor-exited"})
@@ -223,7 +289,13 @@ def work(run, expected_host_bus_id, adapter):
         owner = bus_call(bus, "GetNameOwner", "s", (KWIN,))
         require(bus_call(bus, "GetConnectionUnixProcessID", "s", (owner,)) == kwin.pid,
                 "Private KWin PID mismatch")
-        require(installed_kwin_identity() == installed_identity, "KWin executable changed during launch")
+        if executable == KWIN_EXE:
+            require(installed_kwin_identity() == executable_identity, "KWin executable changed during launch")
+        else:
+            require(experiment_file(executable, expected_digest, "kwin_wayland") == executable_identity,
+                    "Private KWin executable changed during launch")
+            require(Path(f"/proc/{kwin.pid}/exe").resolve(strict=True) == executable,
+                    "Private KWin running executable mismatch")
         socket = runtime / SOCKET
         require(stat.S_ISSOCK(socket.stat().st_mode), "Private Wayland socket missing")
         support = call(bus, owner, "/KWin", "org.kde.KWin", "supportInformation")
@@ -233,7 +305,6 @@ def work(run, expected_host_bus_id, adapter):
         desktop_initial = call(bus, owner, desktops_path, PROPERTIES, "GetAll", "s",
                                (desktops_interface,))
         require(desktop_initial["count"] == 2, "Expected two private desktops")
-        env = {"WAYLAND_DISPLAY": SOCKET, "QT_QPA_PLATFORM": "wayland"}
         bus_call(bus, "UpdateActivationEnvironment", "a{ss}", (env,))
         path = "/ActivityManager/Activities"
         interface = ACTIVITIES + ".Activities"
@@ -245,19 +316,10 @@ def work(run, expected_host_bus_id, adapter):
             call(bus, ACTIVITIES, path, interface, "SetCurrentActivity", "s", (activity,))
         require(len(call(bus, ACTIVITIES, path, interface, "ListActivities")) == 1,
                 "Expected one private Activity")
-        print(json.dumps({"isolatedKWin": VERSION, "executableSha256": KWIN_SHA256, "desktops": 2, "activities": 1,
+        print(json.dumps({"isolatedKWin": VERSION, "executableSha256": expected_digest, "desktops": 2, "activities": 1,
                           "authority": "deny-only"}), flush=True)
 
-        apps = []
-        for index in range(5):
-            output = stack.enter_context((run / f"app{index}.log").open("w"))
-            process = subprocess.Popen([sys.executable, str(HERE / "fixture.py")],
-                                       env={**os.environ, **env}, stdin=subprocess.PIPE,
-                                       stdout=subprocess.PIPE, stderr=output, text=True)
-            stack.callback(process.stdin.close)
-            stack.callback(process.stdout.close)
-            stack.callback(stop, process)
-            apps.append(process)
+        apps.extend(own_surface(index) for index in range(len(apps), 5))
         script = run / "authority-fixture.js"
         incarnation = str(uuid.uuid4())
         script.write_text((ROOT / "experiments/kwin-authority/authority.js").read_text() +
@@ -378,10 +440,36 @@ def work(run, expected_host_bus_id, adapter):
         stop(kwin)
         reader.join(timeout=3)
         require(not reader.is_alive(), "Private compositor log reader did not stop")
+        if experiment:
+            native = [line.split("DEPTHOS_NATIVE37 ", 1)[1].strip()
+                      for line in (run / "kwin.log").read_text().splitlines()
+                      if "DEPTHOS_NATIVE37 " in line]
+            require(native.count("ready deny-only") == 1, "Private native component did not attach exactly once")
+            captures = [line for line in native if line.startswith("pending native-match ")]
+            require(len(captures) >= 4, "Not enough exact native snapshots")
+            turns = [line for line in native if line.startswith("synthetic ")]
+            if synthetic:
+                require(sum("prompt=synthetic-fixture" in line and "lock=fixture-unlocked" in line
+                            for line in captures) == 1
+                        and turns == ["synthetic first=counted replay=denied count=1"],
+                        "Expected one internally owned synthetic turn and denied replay")
+            else:
+                require(not turns and all("prompt=absent" in line and "lock=unknown" in line
+                                           for line in captures),
+                        "Expected unavailable lock and prompt gates with zero synthetic turns")
+            for outcome in ("retired deadline", "retired topology"):
+                require(outcome in native, f"Missing native lifecycle observation {outcome}")
+            require(any(line in native for line in ("retired focus", "retired seat-focus")),
+                    "No native focus invalidation")
+            require(any(line in native for line in ("retired window-state", "retired window-removed")),
+                    "No native lifetime invalidation")
+            print(f"Native observer verified in private KWin ({len(captures)} guarded proposals,"
+                  f" {'one fixture-only count' if synthetic else 'deny-only'})",
+                  flush=True)
     require(not socket.exists(), "Private Wayland socket remained after KWin teardown")
 
 
-def main():
+def main(experiment=()):
     os.umask(0o077)
     subprocess.run(["cargo", "build", "--locked", "--offline", "--example", ADAPTER],
                    cwd=ROOT, check=True)
@@ -392,7 +480,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="depthos-p3-", dir="/tmp") as directory:
         run = Path(directory)
         try:
-            launch(run, str(before["bus"]), adapter)
+            launch(run, str(before["bus"]), adapter, experiment)
         except Exception:
             for output in sorted(run.glob("*.log")):
                 print(f"\n{output.name}\n{output.read_text()[-3500:]}", file=sys.stderr)
@@ -412,9 +500,10 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 5 and sys.argv[1] == "--worker":
-        work(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]))
-    elif len(sys.argv) == 1:
-        main()
+    if len(sys.argv) >= 5 and sys.argv[1] == "--worker":
+        work(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]), tuple(sys.argv[5:]))
     else:
-        raise SystemExit("Usage: run.py")
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument("--experiment", nargs=3, metavar=("MODE", "PATH", "SHA256"))
+        args = parser.parse_args()
+        main(tuple(args.experiment or ()))

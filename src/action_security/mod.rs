@@ -1,10 +1,8 @@
 //! Offline authorization reference model. No transport, native executor, persistence,
 //! wall clock or callbacks. Production interaction proof issuance is unavailable.
 //! Synthetic consent exists only in this module’s tests.
-use crate::{
-    context::{Version, policy::WindowKey},
-    domain::WorkspaceId,
-};
+pub use crate::context::policy::WindowKey;
+use crate::{context::Version, domain::WorkspaceId};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -13,6 +11,8 @@ use uuid::Uuid;
 
 mod proposal;
 pub use proposal::NativeMoveProposal;
+
+pub mod lease;
 
 pub const MAX_ACTIONS: usize = 64;
 pub const CONSENT_TTL_MS: u64 = 5_000;

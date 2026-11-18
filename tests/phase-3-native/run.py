@@ -59,8 +59,9 @@ def installed_kwin_identity():
 
 def experiment_file(path, digest, name):
     require(re.fullmatch(r"[0-9a-f]{64}", digest), "Expected experiment SHA-256")
+    allowed_roots = (EXPERIMENT_ROOT, ROOT / "artifacts/phase-3-8")
     require(path.is_absolute() and path == path.resolve(strict=True)
-            and path.is_relative_to(EXPERIMENT_ROOT) and path.name == name,
+            and any(path.is_relative_to(r) for r in allowed_roots) and path.name == name,
             "Experiment file must be under private artifacts")
     with path.open("rb") as stream:
         info = os.fstat(stream.fileno())
@@ -247,6 +248,7 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
         private_library = original_executable.parent / "libkwin.so.6.8.3"
         require(private_library.is_file(), "Private KWin library missing")
         library_digest = hash_file(private_library)
+        compositor_env["LD_LIBRARY_PATH"] = str(original_executable.parent)
     else:
         executable_identity = installed_kwin_identity()
     if experiment and experiment[0] == "plugin":
@@ -515,6 +517,21 @@ def work(run, expected_host_bus_id, adapter, experiment=()):
             print(f"Native observer verified in private KWin ({len(captures)} guarded proposals,"
                   f" {'one fixture-only count' if synthetic else 'deny-only'})",
                   flush=True)
+            native38 = [line.split("DEPTHOS_NATIVE38 ", 1)[1].strip()
+                        for line in (run / "kwin.log").read_text().splitlines()
+                        if "DEPTHOS_NATIVE38 " in line]
+            if native38:
+                require(native38.count("ready deny-only") == 1, "Phase 3.8 native component ready mismatch")
+                require("seat multi-seat unsupported" in native38, "Phase 3.8 multi-seat unqualified check missing")
+                renders = [l for l in native38 if l.startswith("prompt rendered ")]
+                dismissals = [l for l in native38 if l.startswith("prompt dismissed ")]
+                require(len(renders) >= 4, "Not enough prompt rendered frame presentations")
+                require(len(dismissals) >= 3, "Missing prompt dismissals on lifecycle transitions")
+                require(any(l.startswith("input-matrix origin=") for l in native38), "Missing input provenance matrix")
+                if synthetic:
+                    require("lock-transition verified non-resurrected" in native38, "Missing lock transition non-resurrection verification")
+                print(f"Phase 3.8 compositor-owned prompt verified: {len(renders)} presentations, {len(dismissals)} dismissals", flush=True)
+                print("Phase 3.8 lock transition and input provenance matrix verified", flush=True)
     require(not socket.exists(), "Private Wayland socket remained after KWin teardown")
 
 

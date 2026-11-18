@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Unified runner for Phase 3.8 Adversarial Security Tests.
+
+Executes all independent attack suites:
+1. Native prompt integrity, lock/seat races, resurrection attacks (C++ with ASan/UBSan).
+2. Injected input misclassification and diagnostic-only invariant (Python + Rust).
+3. Production D-Bus read-only allowlist (Python + Rust).
+4. Rust coordinator lease concurrency, fencing, quarantine, and crash-cut (Cargo test).
+"""
+
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def run_step(label, command, cwd=ROOT):
+    print(f"\n=======================================================")
+    print(f"=== [ADVERSARIAL SUITE] {label}")
+    print(f"=======================================================")
+    start = time.monotonic()
+    res = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
+    duration = time.monotonic() - start
+    print(res.stdout)
+    if res.returncode != 0:
+        print(f"FAILED: {label} (exit code {res.returncode})", file=sys.stderr)
+        print(res.stderr, file=sys.stderr)
+        raise RuntimeError(f"Step '{label}' failed")
+    print(f"PASSED: {label} ({duration:.2f}s)")
+
+
+def main():
+    print("Beginning Phase 3.8 Independent Adversarial Test Suite Execution...")
+    start_total = time.monotonic()
+
+    # Step 1: C++ Native Authority & Prompt Integrity (ASan + UBSan)
+    cflags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "Qt6Core"], text=True))
+    libs = shlex.split(subprocess.check_output(["pkg-config", "--libs", "Qt6Core"], text=True))
+    bin_path = ROOT / "target/adversarial_native_authority"
+    bin_path.parent.mkdir(parents=True, exist_ok=True)
+
+    compile_cmd = [
+        "c++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-g",
+        "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer",
+        "-DDEPTHOS_AUTHORITY_UNIT_TEST",
+        "-I", str(ROOT / "experiments/kwin-authority/native"),
+        str(ROOT / "tests/adversarial/test_prompt_integrity_adversarial.cpp"),
+        "-o", str(bin_path),
+        *cflags, *libs
+    ]
+    run_step("Compile Native Authority Adversarial Test (ASan + UBSan)", compile_cmd)
+    run_step("Execute Native Authority Adversarial Test", [str(bin_path)])
+
+    # Step 2: Injected Input Misclassification
+    run_step("Execute Injected Input Classification Attacks", [
+        sys.executable, str(ROOT / "tests/adversarial/test_input_classification_adversarial.py")
+    ])
+
+    # Step 3: Production D-Bus Read-Only Allowlist
+    run_step("Execute Production D-Bus Allowlist Audit", [
+        sys.executable, str(ROOT / "tests/adversarial/test_production_allowlist_adversarial.py")
+    ])
+
+    # Step 4: Rust Coordinator Lease Adversarial Suite
+    run_step("Execute Coordinator Lease Adversarial Suite (Rust)", [
+        "cargo", "test", "--test", "adversarial_lease", "--locked", "--offline"
+    ])
+
+    total_duration = time.monotonic() - start_total
+    print("\n=======================================================")
+    print(f"=== ALL PHASE 3.8 ADVERSARIAL SUITES PASSED ({total_duration:.2f}s) ===")
+    print("=======================================================")
+
+
+if __name__ == "__main__":
+    main()

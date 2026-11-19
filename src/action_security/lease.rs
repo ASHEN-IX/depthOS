@@ -404,6 +404,69 @@ impl CoordinatorLeaseManager {
         Ok(())
     }
 
+    /// Complete an active reservation with an authoritative outcome (Applied or Rejected).
+    pub fn complete_lease(
+        &mut self,
+        id: LeaseId,
+        outcome: TerminalOutcome,
+        now: Tick,
+    ) -> Result<(), LeaseError> {
+        self.advance_time(now)?;
+
+        let reservation = self
+            .active_reservations
+            .remove(&id)
+            .ok_or(LeaseError::NotFound)?;
+        self.locked_windows.remove(&reservation.window);
+        self.locked_native_uuids.remove(&reservation.native_uuid);
+
+        self.consumed_operations.insert(reservation.operation_id);
+        self.history.insert(
+            id,
+            LeaseState::Terminal {
+                id,
+                window: reservation.window,
+                outcome,
+                at: now,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Transition an active reservation to Quarantined due to transport uncertainty or lost ack.
+    pub fn quarantine(
+        &mut self,
+        id: LeaseId,
+        uncertainty: Uncertainty,
+        now: Tick,
+    ) -> Result<(), LeaseError> {
+        self.advance_time(now)?;
+
+        let reservation = self
+            .active_reservations
+            .remove(&id)
+            .ok_or(LeaseError::NotFound)?;
+        self.locked_windows.remove(&reservation.window);
+        self.locked_native_uuids.remove(&reservation.native_uuid);
+
+        self.quarantined_windows
+            .insert(reservation.window.clone(), (id, uncertainty, now));
+        self.quarantined_native_uuids
+            .insert(reservation.native_uuid, reservation.window.clone());
+        self.history.insert(
+            id,
+            LeaseState::Quarantined {
+                id,
+                window: reservation.window,
+                uncertainty,
+                at: now,
+            },
+        );
+
+        Ok(())
+    }
+
     /// Consume a reservation via synthetic native sink.
     ///
     /// Linearization Point: Dispatch to synthetic sink.

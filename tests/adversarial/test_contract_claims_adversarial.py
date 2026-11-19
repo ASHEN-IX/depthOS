@@ -75,6 +75,12 @@ def main():
         DOCS_DIR / "phase-3-9-security-review.md",
         DOCS_DIR / "phase-3-9-validation.md",
     ]
+
+    phase_3_10_docs = [
+        DOCS_DIR / "phase-3-10-protocol.md",
+        DOCS_DIR / "phase-3-10-peer-authentication.md",
+        DOCS_DIR / "phase-3-10-reconciliation.md",
+    ]
     
     total_findings = 0
     
@@ -92,6 +98,20 @@ def main():
             
     print(f"\nChecking pending Phase 3.9 docs (if present)...")
     for doc in phase_3_9_docs:
+        if doc.exists():
+            findings = audit_claim_file(doc)
+            if findings:
+                print(f"FAILED: {doc.name} has contract overstatements:")
+                for f in findings:
+                    print(f"  - {f}")
+                total_findings += len(findings)
+            else:
+                print(f"PASS: {doc.name} satisfies all security claim boundaries.")
+        else:
+            print(f"INFO: {doc.name} not yet authored by Agent 1 (will be audited upon handoff).")
+
+    print(f"\nChecking Phase 3.10 docs...")
+    for doc in phase_3_10_docs:
         if doc.exists():
             findings = audit_claim_file(doc)
             if findings:

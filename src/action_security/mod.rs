@@ -14,7 +14,9 @@ mod proposal;
 pub use proposal::NativeMoveProposal;
 
 pub mod durable;
+pub mod ipc;
 pub mod lease;
+pub mod reconciliation;
 
 pub const MAX_ACTIONS: usize = 64;
 pub const CONSENT_TTL_MS: u64 = 5_000;

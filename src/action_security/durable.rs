@@ -332,8 +332,20 @@ impl DurableOperationJournal {
         })
     }
 
-    pub fn connection(&self) -> &Connection {
-        &self.conn
+    /// Read the SQLite `PRAGMA synchronous` value for durability diagnostics.
+    pub fn pragma_synchronous(&self) -> Result<i64, DurableError> {
+        let val: i64 = self
+            .conn
+            .query_row("PRAGMA synchronous;", [], |row| row.get(0))?;
+        Ok(val)
+    }
+
+    /// Read the SQLite `PRAGMA journal_mode` value for durability diagnostics.
+    pub fn pragma_journal_mode(&self) -> Result<String, DurableError> {
+        let mode: String = self
+            .conn
+            .query_row("PRAGMA journal_mode;", [], |row| row.get(0))?;
+        Ok(mode)
     }
 
     pub fn set_crash_point(&mut self, cp: CrashPoint) {
@@ -1352,6 +1364,48 @@ impl DurableCoordinatorSession {
         self.lease_manager
             .reconcile_quarantined_window(&evidence.verified_window_key);
 
+        Ok(())
+    }
+
+    /// Complete an operation and its lease with terminal outcome (Applied or Rejected).
+    pub fn complete_lease(
+        &mut self,
+        lease_id: LeaseId,
+        op_id: RequestId,
+        outcome: TerminalOutcome,
+        compositor_incarnation: Uuid,
+        now: Tick,
+    ) -> Result<(), DurableError> {
+        self.journal
+            .record_acknowledgment(op_id, outcome, compositor_incarnation)?;
+        self.lease_manager.complete_lease(lease_id, outcome, now)?;
+        Ok(())
+    }
+
+    /// Transition an operation and its lease to Quarantined on uncertainty or lost ack.
+    pub fn quarantine_lease(
+        &mut self,
+        lease_id: LeaseId,
+        op_id: RequestId,
+        reason: &str,
+        uncertainty: crate::action_security::Uncertainty,
+        now: Tick,
+    ) -> Result<(), DurableError> {
+        self.journal.quarantine_operation(op_id, reason)?;
+        self.lease_manager.quarantine(lease_id, uncertainty, now)?;
+        Ok(())
+    }
+
+    /// Abort an operation and release its reservation before dispatch.
+    pub fn abort_lease(
+        &mut self,
+        lease_id: LeaseId,
+        op_id: RequestId,
+        reason: &str,
+        now: Tick,
+    ) -> Result<(), DurableError> {
+        self.journal.abort_operation(op_id, reason)?;
+        self.lease_manager.revoke(lease_id, now)?;
         Ok(())
     }
 }

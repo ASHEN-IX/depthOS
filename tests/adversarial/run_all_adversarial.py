@@ -43,7 +43,7 @@ def main():
     bin_path.parent.mkdir(parents=True, exist_ok=True)
 
     compile_cmd = [
-        "c++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-g",
+        "c++", "-std=c++20", "-fPIC", "-Wall", "-Wextra", "-Werror", "-g",
         "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer",
         "-DDEPTHOS_AUTHORITY_UNIT_TEST",
         "-I", str(ROOT / "experiments/kwin-authority/native"),
@@ -84,9 +84,14 @@ def main():
         "cargo", "test", "--test", "adversarial_durable_coordinator", "--locked", "--offline"
     ])
 
+    # Step 8: Phase 3.10 Cross-Process Protocol & Durable Integration Suite (Rust)
+    run_step("Execute Cross-Process Protocol & Durable Integration Suite (Rust)", [
+        "cargo", "test", "--test", "cross_process_durable", "--locked", "--offline"
+    ])
+
     total_duration = time.monotonic() - start_total
     print("\n=======================================================")
-    print(f"=== ALL PHASE 3.8 / 3.9 ADVERSARIAL SUITES PASSED ({total_duration:.2f}s) ===")
+    print(f"=== ALL PHASE 3.8 / 3.9 / 3.10 ADVERSARIAL SUITES PASSED ({total_duration:.2f}s) ===")
     print("=======================================================")
 
 

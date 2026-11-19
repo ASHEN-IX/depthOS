@@ -707,10 +707,7 @@ fn test_regression_vulnerability_sqlite_synchronous_full_pragma() {
     let db_path = temp.path().join("pragma_test.sqlite3");
     let journal = DurableOperationJournal::open(&db_path).unwrap();
 
-    let synchronous_val: i32 = journal
-        .connection()
-        .query_row("PRAGMA synchronous;", [], |row| row.get(0))
-        .unwrap();
+    let synchronous_val = journal.pragma_synchronous().unwrap();
 
     // PRAGMA synchronous = FULL is 2; NORMAL is 1.
     // For durable coordinator operations, FULL (2) is required.

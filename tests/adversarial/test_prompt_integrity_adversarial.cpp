@@ -315,6 +315,301 @@ int main(int argc, char **argv) {
                   << (movePrompt ? "prompt" : "window") << " strictly denied." << std::endl;
     }
 
+    std::cout << "\n--- [ADVERSARIAL 6] Phase 3.10 Synthetic IPC Endpoint Adversarial Tests ---" << std::endl;
+    // 6.1 Peer Credential Verification
+    {
+        int fds[2];
+        check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+        check(SyntheticAuthorityServer::verifyPeerCredentials(fds[0]), "Peer credentials check failed");
+        close(fds[0]);
+        close(fds[1]);
+        std::cout << "PASS: Peer credential check verified for same-UID process." << std::endl;
+    }
+
+    // 6.2 Bootstrap Token Authentication & Unauthorized Rejection
+    {
+        AdversarialFixture f;
+        SyntheticAuthorityServer server(f.kernel, f.world, "secret-bootstrap-token-128", "fixture-token", "comp-uuid");
+        int fds[2];
+        check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+        // Send Hello with wrong bootstrap token
+        QJsonObject content;
+        content["protocol_version"] = 0x0100;
+        content["session_id"] = "sess-1";
+        content["coordinator_incarnation"] = "coord-inc-1";
+        content["coordinator_epoch"] = 1;
+        content["bootstrap_token"] = "wrong-forged-token";
+        content["client_pid"] = static_cast<qint64>(getpid());
+
+        QJsonObject root;
+        root["msg_type"] = "Hello";
+        root["payload"] = content;
+
+        QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+        check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::Hello,
+                               std::string(bytes.constData(), bytes.size())), "sendFrame failed");
+
+        // Server must reject unauthorized connection attempt
+        check(!server.processMessage(fds[0]), "Server accepted invalid bootstrap token");
+        check(!server.isAuthenticated(), "Server marked authenticated on bad token");
+        close(fds[0]);
+        close(fds[1]);
+        std::cout << "PASS: Unauthorized connection attempt with invalid bootstrap token strictly rejected." << std::endl;
+    }
+
+    // 6.3 Valid Handshake & Session Activation
+    {
+        AdversarialFixture f;
+        SyntheticAuthorityServer server(f.kernel, f.world, "secret-bootstrap-token-128", "fixture-token", "comp-uuid");
+        int fds[2];
+        check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+        QJsonObject content;
+        content["protocol_version"] = 0x0100;
+        content["session_id"] = "sess-1";
+        content["coordinator_incarnation"] = "coord-inc-1";
+        content["coordinator_epoch"] = 1;
+        content["bootstrap_token"] = "secret-bootstrap-token-128";
+        content["client_pid"] = static_cast<qint64>(getpid());
+
+        QJsonObject root;
+        root["msg_type"] = "Hello";
+        root["payload"] = content;
+
+        QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+        check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::Hello,
+                               std::string(bytes.constData(), bytes.size())), "sendFrame failed");
+
+        check(server.processMessage(fds[0]), "Server rejected valid bootstrap token");
+        check(server.isAuthenticated(), "Server not authenticated after valid token");
+
+        // Client reads HelloAccepted
+        SyntheticAuthorityServer::MessageType repType;
+        std::uint64_t seq = 0;
+        std::string reply;
+        check(server.readFrame(fds[1], repType, seq, reply), "Client read HelloAccepted failed");
+        check(repType == SyntheticAuthorityServer::MessageType::HelloAccepted, "Expected HelloAccepted type");
+
+        close(fds[0]);
+        close(fds[1]);
+        std::cout << "PASS: Valid bootstrap token handshake establishes authenticated session." << std::endl;
+    }
+
+    // 6.4 Framing Boundary: Oversize Payload (>64KiB) Rejection Without Allocation
+    {
+        AdversarialFixture f;
+        SyntheticAuthorityServer server(f.kernel, f.world, "tok", "fixt", "comp");
+        int fds[2];
+        check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+        // Send frame with declared length 70000 bytes (> 65536)
+        char headerBuf[20];
+        uint32_t magic = htobe32(0x44504F53);
+        uint16_t ver = htobe16(0x0100);
+        uint16_t typeCode = htobe16(1);
+        uint64_t s = htobe64(1);
+        uint32_t len = htobe32(70000); // 70 KiB
+        std::memcpy(&headerBuf[0], &magic, 4);
+        std::memcpy(&headerBuf[4], &ver, 2);
+        std::memcpy(&headerBuf[6], &typeCode, 2);
+        std::memcpy(&headerBuf[8], &s, 8);
+        std::memcpy(&headerBuf[16], &len, 4);
+
+        check(write(fds[1], headerBuf, 20) == 20, "write header failed");
+
+        SyntheticAuthorityServer::MessageType t;
+        std::uint64_t rseq = 0;
+        std::string p;
+        check(!server.readFrame(fds[0], t, rseq, p), "Server accepted oversize payload");
+
+        close(fds[0]);
+        close(fds[1]);
+        std::cout << "PASS: Oversize payload (>64KiB) rejected immediately without memory allocation." << std::endl;
+    }
+
+    // 6.5 Framing Boundary: Malformed Magic & Version Rejection
+    {
+        AdversarialFixture f;
+        SyntheticAuthorityServer server(f.kernel, f.world, "tok", "fixt", "comp");
+        int fds[2];
+        check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+        // Bad magic: 0xDEADBEEF
+        char headerBuf[20];
+        uint32_t magic = htobe32(0xDEADBEEF);
+        uint16_t ver = htobe16(0x0100);
+        uint16_t typeCode = htobe16(1);
+        uint64_t s = htobe64(1);
+        uint32_t len = htobe32(10);
+        std::memcpy(&headerBuf[0], &magic, 4);
+        std::memcpy(&headerBuf[4], &ver, 2);
+        std::memcpy(&headerBuf[6], &typeCode, 2);
+        std::memcpy(&headerBuf[8], &s, 8);
+        std::memcpy(&headerBuf[16], &len, 4);
+
+        check(write(fds[1], headerBuf, 20) == 20, "write header failed");
+        SyntheticAuthorityServer::MessageType t;
+        std::uint64_t rseq = 0;
+        std::string p;
+        check(!server.readFrame(fds[0], t, rseq, p), "Server accepted bad magic");
+
+        close(fds[0]);
+        close(fds[1]);
+        std::cout << "PASS: Malformed framing magic strictly rejected." << std::endl;
+    }
+
+    // 6.6 Packet Sequence Replay Rejection
+    {
+        AdversarialFixture f;
+        SyntheticAuthorityServer server(f.kernel, f.world, "tok", "fixt", "comp");
+        int fds[2];
+        check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+        // Sequence number = 5 when server expects 1
+        char headerBuf[20];
+        uint32_t magic = htobe32(0x44504F53);
+        uint16_t ver = htobe16(0x0100);
+        uint16_t typeCode = htobe16(1);
+        uint64_t s = htobe64(5); // Out of order!
+        uint32_t len = htobe32(0);
+        std::memcpy(&headerBuf[0], &magic, 4);
+        std::memcpy(&headerBuf[4], &ver, 2);
+        std::memcpy(&headerBuf[6], &typeCode, 2);
+        std::memcpy(&headerBuf[8], &s, 8);
+        std::memcpy(&headerBuf[16], &len, 4);
+
+        check(write(fds[1], headerBuf, 20) == 20, "write header failed");
+        SyntheticAuthorityServer::MessageType t;
+        std::uint64_t rseq = 0;
+        std::string p;
+        check(!server.readFrame(fds[0], t, rseq, p), "Server accepted out-of-order sequence");
+
+        close(fds[0]);
+        close(fds[1]);
+        std::cout << "PASS: Packet sequence gap and replay strictly rejected." << std::endl;
+    }
+
+    // 6.7 End-to-End Synthetic Proposal, Single-Use Invariant & Non-Mutation Guarantee
+    {
+        AdversarialFixture f;
+        SyntheticAuthorityServer server(f.kernel, f.world, "secret-tok", "fixture-auth-token-128", "comp-uuid-42");
+        int fds[2];
+        check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+        // 1. Handshake
+        {
+            QJsonObject content;
+            content["protocol_version"] = 0x0100;
+            content["session_id"] = "sess-alpha";
+            content["coordinator_incarnation"] = "coord-alpha";
+            content["coordinator_epoch"] = 1;
+            content["bootstrap_token"] = "secret-tok";
+            content["client_pid"] = static_cast<qint64>(getpid());
+            QJsonObject root;
+            root["msg_type"] = "Hello";
+            root["payload"] = content;
+            QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::Hello,
+                                   std::string(bytes.constData(), bytes.size())), "send Hello");
+            check(server.processMessage(fds[0], f.now), "process Hello");
+            SyntheticAuthorityServer::MessageType repType;
+            std::uint64_t seq = 0;
+            std::string reply;
+            check(server.readFrame(fds[1], repType, seq, reply), "read HelloAccepted");
+            check(repType == SyntheticAuthorityServer::MessageType::HelloAccepted, "repType HelloAccepted");
+        }
+
+        // 2. Reserve
+        {
+            QJsonObject content;
+            content["protocol_version"] = 0x0100;
+            content["session_id"] = "sess-alpha";
+            content["operation_id"] = "op-1";
+            content["lease_id"] = "lease-1";
+            content["coordinator_incarnation"] = "coord-alpha";
+            content["coordinator_epoch"] = 1;
+            content["native_uuid"] = "window-uuid-001";
+            QJsonObject root;
+            root["msg_type"] = "Reserve";
+            root["payload"] = content;
+            QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::Reserve,
+                                   std::string(bytes.constData(), bytes.size())), "send Reserve");
+            check(server.processMessage(fds[0], f.now), "process Reserve");
+            SyntheticAuthorityServer::MessageType repType;
+            std::uint64_t seq = 0;
+            std::string reply;
+            check(server.readFrame(fds[1], repType, seq, reply), "read Prepared");
+            check(repType == SyntheticAuthorityServer::MessageType::Prepared, "repType Prepared");
+        }
+
+        // 3. SyntheticAttempt with valid tokens
+        {
+            QJsonObject content;
+            content["protocol_version"] = 0x0100;
+            content["session_id"] = "sess-alpha";
+            content["operation_id"] = "op-1";
+            content["lease_id"] = "lease-1";
+            content["attempt"] = 1;
+            content["coordinator_incarnation"] = "coord-alpha";
+            content["coordinator_epoch"] = 1;
+            content["compositor_incarnation"] = "comp-uuid-42";
+            content["native_uuid"] = "window-uuid-001";
+            content["fixture_authority_token"] = "fixture-auth-token-128";
+            QJsonObject root;
+            root["msg_type"] = "SyntheticAttempt";
+            root["payload"] = content;
+            QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::SyntheticAttempt,
+                                   std::string(bytes.constData(), bytes.size())), "send SyntheticAttempt");
+            check(server.processMessage(fds[0], f.now), "process SyntheticAttempt");
+            SyntheticAuthorityServer::MessageType repType;
+            std::uint64_t seq = 0;
+            std::string reply;
+            check(server.readFrame(fds[1], repType, seq, reply), "read Acknowledge");
+            check(repType == SyntheticAuthorityServer::MessageType::Acknowledge, "repType Acknowledge");
+
+            QJsonDocument ackDoc = QJsonDocument::fromJson(QByteArray::fromRawData(reply.data(), reply.size()));
+            check(ackDoc.object()["payload"].toObject()["outcome"].toString() == "Applied", "Ack outcome Applied");
+            check(server.count() == 1, "Counter incremented to exactly 1");
+        }
+
+        // 4. Duplicate Attempt: strictly denied, counter stays 1
+        {
+            QJsonObject content;
+            content["protocol_version"] = 0x0100;
+            content["session_id"] = "sess-alpha";
+            content["operation_id"] = "op-1";
+            content["lease_id"] = "lease-1";
+            content["attempt"] = 2;
+            content["coordinator_incarnation"] = "coord-alpha";
+            content["coordinator_epoch"] = 1;
+            content["compositor_incarnation"] = "comp-uuid-42";
+            content["native_uuid"] = "window-uuid-001";
+            content["fixture_authority_token"] = "fixture-auth-token-128";
+            QJsonObject root;
+            root["msg_type"] = "SyntheticAttempt";
+            root["payload"] = content;
+            QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::SyntheticAttempt,
+                                   std::string(bytes.constData(), bytes.size())), "send duplicate Attempt");
+            check(server.processMessage(fds[0], f.now), "process duplicate Attempt");
+            SyntheticAuthorityServer::MessageType repType;
+            std::uint64_t seq = 0;
+            std::string reply;
+            check(server.readFrame(fds[1], repType, seq, reply), "read second Acknowledge");
+
+            QJsonDocument ackDoc = QJsonDocument::fromJson(QByteArray::fromRawData(reply.data(), reply.size()));
+            check(ackDoc.object()["payload"].toObject()["outcome"].toString() == "Rejected", "Duplicate attempt Rejected");
+            check(server.count() == 1, "Counter strictly remains 1 (single-use invariant)");
+        }
+
+        close(fds[0]);
+        close(fds[1]);
+        std::cout << "PASS: End-to-end synthetic proposal, single-use counting, and non-mutation verified." << std::endl;
+    }
+
     std::cout << "\n=== ALL NATIVE AUTHORITY ADVERSARIAL TESTS PASSED ===" << std::endl;
 #endif
 

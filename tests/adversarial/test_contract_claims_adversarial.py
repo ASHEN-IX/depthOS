@@ -83,6 +83,17 @@ def main():
         DOCS_DIR / "phase-3-10-security-review.md",
         DOCS_DIR / "phase-3-10-validation.md",
     ]
+
+    phase_3_10_1_docs = [
+        DOCS_DIR / "phase-3-10-1-audit-discrepancies.md",
+        DOCS_DIR / "phase-3-10-1-consent-boundary.md",
+        DOCS_DIR / "phase-3-10-1-native-integration.md",
+        DOCS_DIR / "phase-3-10-1-quarantine-identity.md",
+        DOCS_DIR / "phase-3-10-1-reconciliation.md",
+        DOCS_DIR / "phase-4-readiness.md",
+        DOCS_DIR / "phase-3-10-1-security-review.md",
+        DOCS_DIR / "phase-3-10-1-validation.md",
+    ]
     
     total_findings = 0
     
@@ -125,6 +136,20 @@ def main():
                 print(f"PASS: {doc.name} satisfies all security claim boundaries.")
         else:
             print(f"INFO: {doc.name} not yet authored by Agent 1 (will be audited upon handoff).")
+
+    print(f"\nChecking Phase 3.10.1 docs...")
+    for doc in phase_3_10_1_docs:
+        if doc.exists():
+            findings = audit_claim_file(doc)
+            if findings:
+                print(f"FAILED: {doc.name} has contract overstatements:")
+                for f in findings:
+                    print(f"  - {f}")
+                total_findings += len(findings)
+            else:
+                print(f"PASS: {doc.name} satisfies all security claim boundaries.")
+        else:
+            print(f"INFO: {doc.name} not yet authored (will be audited upon creation).")
 
     if total_findings > 0:
         print(f"\nAudit failed with {total_findings} overstatement findings!", file=sys.stderr)

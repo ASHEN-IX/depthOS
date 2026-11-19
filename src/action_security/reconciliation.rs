@@ -140,7 +140,7 @@ impl AuthoritativeReconciliationGateway {
         // 10. Clear in-memory exclusion lock in lease manager
         session
             .lease_manager_mut()
-            .reconcile_quarantined_window(&rec.window_key);
+            .reconcile_quarantined_resource(&rec.window_key, rec.native_uuid);
 
         Ok(TerminalReceiptMessage {
             protocol_version: super::ipc::PROTOCOL_VERSION,

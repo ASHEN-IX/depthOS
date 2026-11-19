@@ -80,6 +80,8 @@ def main():
         DOCS_DIR / "phase-3-10-protocol.md",
         DOCS_DIR / "phase-3-10-peer-authentication.md",
         DOCS_DIR / "phase-3-10-reconciliation.md",
+        DOCS_DIR / "phase-3-10-security-review.md",
+        DOCS_DIR / "phase-3-10-validation.md",
     ]
     
     total_findings = 0

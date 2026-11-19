@@ -283,6 +283,13 @@ impl DurableOperationJournal {
              PRAGMA busy_timeout = 5000;",
         )?;
 
+        let sync_val: i64 = conn.query_row("PRAGMA synchronous;", [], |row| row.get(0))?;
+        if sync_val != 2 {
+            return Err(DurableError::Database(format!(
+                "Failed to enforce PRAGMA synchronous = FULL (expected 2, got {sync_val})"
+            )));
+        }
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS coordinator_incarnations (
                 incarnation_id TEXT PRIMARY KEY,

@@ -499,7 +499,7 @@ impl IpcStream {
     }
 
     fn validate_state_transition(&mut self, msg_type: MessageType) -> Result<(), IpcError> {
-        match self.session_state {
+        let res = match self.session_state {
             SessionState::Unauthenticated => match msg_type {
                 MessageType::Hello | MessageType::HelloAccepted => Ok(()),
                 _ => Err(IpcError::InvalidTransition {
@@ -508,10 +508,12 @@ impl IpcStream {
                 }),
             },
             SessionState::Active => match msg_type {
-                MessageType::Hello => Err(IpcError::InvalidTransition {
-                    from: self.session_state,
-                    msg_type,
-                }),
+                MessageType::Hello | MessageType::HelloAccepted => {
+                    Err(IpcError::InvalidTransition {
+                        from: self.session_state,
+                        msg_type,
+                    })
+                }
                 _ => Ok(()),
             },
             SessionState::Quarantined => match msg_type {
@@ -527,7 +529,11 @@ impl IpcStream {
                 from: self.session_state,
                 msg_type,
             }),
+        };
+        if res.is_err() {
+            self.session_state = SessionState::Terminated;
         }
+        res
     }
 }
 
@@ -543,7 +549,7 @@ pub fn verify_peer_credentials<F: std::os::fd::AsFd>(
         .map_err(|e| IpcError::PeerCredFailed(format!("Failed getsockopt SO_PEERCRED: {e}")))?;
     let peer_uid = cred.uid.as_raw();
     let peer_gid = cred.gid.as_raw();
-    let peer_pid = cred.pid.as_raw_pid() as u32;
+    let raw_pid = cred.pid.as_raw_pid();
 
     let my_uid = rustix::process::geteuid().as_raw();
     if peer_uid != my_uid {
@@ -551,11 +557,12 @@ pub fn verify_peer_credentials<F: std::os::fd::AsFd>(
             "Peer UID {peer_uid} does not match current user {my_uid}"
         )));
     }
-    if peer_pid == 0 {
+    if raw_pid <= 0 {
         return Err(IpcError::PeerCredFailed(
             "Peer PID is zero or invalid".into(),
         ));
     }
+    let peer_pid = raw_pid as u32;
     if let Some(exp_pid) = expected_pid
         && peer_pid != exp_pid
     {
@@ -581,7 +588,15 @@ pub fn verify_private_directory<P: AsRef<Path>>(dir: P) -> Result<(), IpcError> 
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let my_uid = rustix::process::geteuid().as_raw();
+        if meta.uid() != my_uid {
+            return Err(IpcError::UnsafePermissions(format!(
+                "Directory owner UID {} does not match current EUID {}",
+                meta.uid(),
+                my_uid
+            )));
+        }
         let mode = meta.permissions().mode();
         if mode & 0o077 != 0 {
             return Err(IpcError::UnsafePermissions(format!(
@@ -590,6 +605,60 @@ pub fn verify_private_directory<P: AsRef<Path>>(dir: P) -> Result<(), IpcError> 
         }
     }
     Ok(())
+}
+
+pub fn verify_private_socket<P: AsRef<Path>>(path: P) -> Result<(), IpcError> {
+    let meta = std::fs::symlink_metadata(path.as_ref())
+        .map_err(|e| IpcError::UnsafePermissions(format!("Cannot inspect socket: {e}")))?;
+    if meta.file_type().is_symlink() {
+        return Err(IpcError::UnsafePermissions(
+            "Socket path must not be a symlink".into(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+        if !meta.file_type().is_socket() {
+            return Err(IpcError::UnsafePermissions(
+                "Path is not a unix domain socket".into(),
+            ));
+        }
+        let my_uid = rustix::process::geteuid().as_raw();
+        if meta.uid() != my_uid {
+            return Err(IpcError::UnsafePermissions(format!(
+                "Socket owner UID {} does not match current EUID {}",
+                meta.uid(),
+                my_uid
+            )));
+        }
+        let mode = meta.permissions().mode();
+        if mode & 0o077 != 0 {
+            return Err(IpcError::UnsafePermissions(format!(
+                "Socket permissions {mode:#o} must be 0600 (no group or other access)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub fn bind_private_listener<P: AsRef<Path>>(
+    path: P,
+) -> Result<tokio::net::UnixListener, IpcError> {
+    let p = path.as_ref();
+    if let Some(parent) = p.parent() {
+        verify_private_directory(parent)?;
+    }
+    if p.exists() {
+        let _ = std::fs::remove_file(p);
+    }
+    let listener = tokio::net::UnixListener::bind(p)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))?;
+    }
+    verify_private_socket(p)?;
+    Ok(listener)
 }
 
 // ---------------------------------------------------------------------------
@@ -906,13 +975,13 @@ impl CrossProcessCoordinator {
                             session_id: self.session_id,
                             operation_id: op_id,
                             lease_id,
-                            final_state: DurableOperationState::Aborted,
+                            final_state: DurableOperationState::Completed,
                             timestamp_ms: now.0,
                         };
                         let _ = stream
                             .send_message(&ProtocolMessage::TerminalReceipt(receipt))
                             .await;
-                        Ok(DurableOperationState::Aborted)
+                        Ok(DurableOperationState::Completed)
                     }
                     AckOutcome::IndeterminateError => {
                         self.session.quarantine_lease(
@@ -945,7 +1014,7 @@ impl CrossProcessCoordinator {
                         comp_inc,
                         now,
                     )?;
-                    Ok(DurableOperationState::Aborted)
+                    Ok(DurableOperationState::Completed)
                 }
             }
             Err(e) => {

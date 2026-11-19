@@ -431,7 +431,7 @@ public:
             bool ready = (matchedWindow != nullptr && matchedWindow->eligible && !kernel_.isPending());
             if (ready) {
                 std::string dest = "destination";
-                kernel_.prepare(world_, matchedWindow->object.data(), dest, now, opId);
+                ready = kernel_.prepare(world_, matchedWindow->object.data(), dest, now, opId);
             }
 
             QJsonObject replyPayload;
@@ -443,7 +443,9 @@ public:
             replyPayload["window_generation"] = static_cast<qint64>(matchedWindow ? matchedWindow->generation : 0);
             replyPayload["ready"] = ready;
             if (!ready) {
-                replyPayload["detail"] = "Window not found or ineligible";
+                replyPayload["detail"] = matchedWindow
+                    ? (kernel_.isPending() ? "Kernel busy with pending proposal" : "Kernel prepare failed")
+                    : "Window not found or ineligible";
             }
 
             QJsonObject replyRoot;
@@ -457,13 +459,17 @@ public:
             return true;
         }
         case MessageType::SyntheticAttempt: {
+            std::string opId = content["operation_id"].toObject()["0"].toString().toStdString();
+            if (opId.empty()) opId = content["operation_id"].toString().toStdString();
             std::string fixtureToken = content["fixture_authority_token"].toString().toStdString();
             std::string compInc = content["compositor_incarnation"].toString().toStdString();
             std::string coordInc = content["coordinator_incarnation"].toString().toStdString();
 
+            bool opMatches = (kernel_.isPending() && kernel_.pending()->proposalId == opId);
             bool tokensValid = (fixtureToken == fixtureAuthorityToken_ &&
                                 compInc == compositorIncarnation_ &&
-                                coordInc == coordinatorIncarnation_);
+                                coordInc == coordinatorIncarnation_ &&
+                                opMatches);
 
             Result outcomeResult = Result::Denied;
             if (tokensValid) {
@@ -486,7 +492,11 @@ public:
                 replyPayload["reason"] = "Uncertain execution";
             } else {
                 replyPayload["outcome"] = "Rejected";
-                replyPayload["reason"] = tokensValid ? "Denied by synthetic kernel" : "Invalid tokens or incarnation";
+                replyPayload["reason"] = !kernel_.isPending()
+                    ? "No pending reservation"
+                    : (!opMatches
+                        ? "Operation ID mismatch"
+                        : (tokensValid ? "Denied by synthetic kernel" : "Invalid tokens or incarnation"));
             }
 
             QJsonObject replyRoot;

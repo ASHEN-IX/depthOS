@@ -493,7 +493,8 @@ int main(int argc, char **argv) {
     // 6.7 End-to-End Synthetic Proposal, Single-Use Invariant & Non-Mutation Guarantee
     {
         AdversarialFixture f;
-        SyntheticAuthorityServer server(f.kernel, f.world, "secret-tok", "fixture-auth-token-128", "comp-uuid-42");
+        Kernel freshKernel;
+        SyntheticAuthorityServer server(freshKernel, f.world, "secret-tok", "fixture-auth-token-128", "comp-uuid-42");
         int fds[2];
         check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
 
@@ -609,6 +610,162 @@ int main(int argc, char **argv) {
         close(fds[1]);
         std::cout << "PASS: End-to-end synthetic proposal, single-use counting, and non-mutation verified." << std::endl;
     }
+
+    // 6.8 Adversarial: Operation ID mismatch in SyntheticAttempt must be strictly rejected
+    {
+        AdversarialFixture f;
+        Kernel k67;
+        SyntheticAuthorityServer server(k67, f.world, "secret-tok", "fixture-auth-token-128", "comp-uuid-42");
+        int fds[2];
+        check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+        // Handshake
+        {
+            QJsonObject content;
+            content["protocol_version"] = 0x0100;
+            content["session_id"] = "sess-beta";
+            content["coordinator_incarnation"] = "coord-beta";
+            content["coordinator_epoch"] = 1;
+            content["bootstrap_token"] = "secret-tok";
+            content["client_pid"] = static_cast<qint64>(getpid());
+            QJsonObject root;
+            root["msg_type"] = "Hello";
+            root["payload"] = content;
+            QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::Hello,
+                                   std::string(bytes.constData(), bytes.size())), "send Hello");
+            check(server.processMessage(fds[0], f.now), "process Hello");
+            SyntheticAuthorityServer::MessageType repType;
+            std::uint64_t seq = 0;
+            std::string reply;
+            check(server.readFrame(fds[1], repType, seq, reply), "read HelloAccepted");
+        }
+
+        // Reserve for "op-legit"
+        {
+            QJsonObject content;
+            content["protocol_version"] = 0x0100;
+            content["session_id"] = "sess-beta";
+            content["operation_id"] = "op-legit";
+            content["lease_id"] = "lease-beta";
+            content["coordinator_incarnation"] = "coord-beta";
+            content["coordinator_epoch"] = 1;
+            content["native_uuid"] = "window-uuid-001";
+            QJsonObject root;
+            root["msg_type"] = "Reserve";
+            root["payload"] = content;
+            QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::Reserve,
+                                   std::string(bytes.constData(), bytes.size())), "send Reserve");
+            check(server.processMessage(fds[0], f.now), "process Reserve");
+            SyntheticAuthorityServer::MessageType repType;
+            std::uint64_t seq = 0;
+            std::string reply;
+            check(server.readFrame(fds[1], repType, seq, reply), "read Prepared");
+        }
+
+        // Adversarial SyntheticAttempt with mismatched operation_id: "op-spoofed"
+        {
+            QJsonObject content;
+            content["protocol_version"] = 0x0100;
+            content["session_id"] = "sess-beta";
+            content["operation_id"] = "op-spoofed"; // Mismatch!
+            content["lease_id"] = "lease-beta";
+            content["attempt"] = 1;
+            content["coordinator_incarnation"] = "coord-beta";
+            content["coordinator_epoch"] = 1;
+            content["compositor_incarnation"] = "comp-uuid-42";
+            content["native_uuid"] = "window-uuid-001";
+            content["fixture_authority_token"] = "fixture-auth-token-128";
+            QJsonObject root;
+            root["msg_type"] = "SyntheticAttempt";
+            root["payload"] = content;
+            QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::SyntheticAttempt,
+                                   std::string(bytes.constData(), bytes.size())), "send spoofed Attempt");
+            check(server.processMessage(fds[0], f.now), "process spoofed Attempt");
+            SyntheticAuthorityServer::MessageType repType;
+            std::uint64_t seq = 0;
+            std::string reply;
+            check(server.readFrame(fds[1], repType, seq, reply), "read Acknowledge");
+
+            QJsonDocument ackDoc = QJsonDocument::fromJson(QByteArray::fromRawData(reply.data(), reply.size()));
+            check(ackDoc.object()["payload"].toObject()["outcome"].toString() == "Rejected",
+                  "Mismatched operation_id in SyntheticAttempt was NOT rejected");
+            check(server.count() == 0, "Counter was incremented despite operation_id mismatch");
+        }
+
+        close(fds[0]);
+        close(fds[1]);
+        std::cout << "PASS: Mismatched operation_id in SyntheticAttempt strictly rejected." << std::endl;
+    }
+
+    // 6.9 Adversarial: Kernel prepare failure must report ready = false in Prepared message
+    {
+        AdversarialFixture f;
+        Kernel k67;
+        SyntheticAuthorityServer server(k67, f.world, "secret-tok", "fixture-auth-token-128", "comp-uuid-42");
+        int fds[2];
+        check(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+
+        // Handshake
+        {
+            QJsonObject content;
+            content["protocol_version"] = 0x0100;
+            content["session_id"] = "sess-gamma";
+            content["coordinator_incarnation"] = "coord-gamma";
+            content["coordinator_epoch"] = 1;
+            content["bootstrap_token"] = "secret-tok";
+            content["client_pid"] = static_cast<qint64>(getpid());
+            QJsonObject root;
+            root["msg_type"] = "Hello";
+            root["payload"] = content;
+            QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::Hello,
+                                   std::string(bytes.constData(), bytes.size())), "send Hello");
+            check(server.processMessage(fds[0], f.now), "process Hello");
+            SyntheticAuthorityServer::MessageType repType;
+            std::uint64_t seq = 0;
+            std::string reply;
+            check(server.readFrame(fds[1], repType, seq, reply), "read HelloAccepted");
+        }
+
+        // Erase "destination" desktop so prepare fails!
+        f.world.desktops.erase("destination");
+
+        // Reserve for "op-prep-fail"
+        {
+            QJsonObject content;
+            content["protocol_version"] = 0x0100;
+            content["session_id"] = "sess-gamma";
+            content["operation_id"] = "op-prep-fail";
+            content["lease_id"] = "lease-gamma";
+            content["coordinator_incarnation"] = "coord-gamma";
+            content["coordinator_epoch"] = 1;
+            content["native_uuid"] = "window-uuid-001";
+            QJsonObject root;
+            root["msg_type"] = "Reserve";
+            root["payload"] = content;
+            QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            check(server.sendFrame(fds[1], SyntheticAuthorityServer::MessageType::Reserve,
+                                   std::string(bytes.constData(), bytes.size())), "send Reserve");
+            check(server.processMessage(fds[0], f.now), "process Reserve");
+            SyntheticAuthorityServer::MessageType repType;
+            std::uint64_t seq = 0;
+            std::string reply;
+            check(server.readFrame(fds[1], repType, seq, reply), "read Prepared");
+
+            QJsonDocument prepDoc = QJsonDocument::fromJson(QByteArray::fromRawData(reply.data(), reply.size()));
+            check(!prepDoc.object()["payload"].toObject()["ready"].toBool(),
+                  "Kernel prepare failure falsely reported ready = true");
+        }
+
+        close(fds[0]);
+        close(fds[1]);
+        std::cout << "PASS: Kernel prepare failure correctly reports ready = false." << std::endl;
+    }
+
+
 
     std::cout << "\n=== ALL NATIVE AUTHORITY ADVERSARIAL TESTS PASSED ===" << std::endl;
 #endif

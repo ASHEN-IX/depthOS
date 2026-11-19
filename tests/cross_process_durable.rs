@@ -22,7 +22,8 @@ use depthos_core::action_security::{
     ipc::{
         AckOutcome, AcknowledgeMessage, CrossProcessCoordinator, HelloAcceptedMessage,
         HelloMessage, IpcError, IpcStream, PreparedMessage, ProtocolMessage,
-        ReconcileEvidenceMessage, SessionState, verify_peer_credentials, verify_private_directory,
+        ReconcileEvidenceMessage, SessionState, bind_private_listener, verify_peer_credentials,
+        verify_private_directory, verify_private_socket,
     },
     lease::{LeaseConfig, LeaseRequest, TerminalOutcome},
     reconciliation::{
@@ -926,5 +927,301 @@ fn test_adversarial_observer_disconnect_permanent_quarantine() {
             .check_window_available(&win)
             .is_err(),
         "Quarantined window must fail check_window_available indefinitely"
+    );
+}
+
+#[tokio::test]
+async fn test_regression_vulnerability_active_session_rejects_duplicate_hello_accepted() {
+    let (s1, mut s2) = UnixStream::pair().unwrap();
+    let mut ipc = IpcStream::new(s1, SessionState::Active);
+
+    // Send a duplicate HelloAccepted while in Active state
+    let msg = ProtocolMessage::HelloAccepted(HelloAcceptedMessage {
+        protocol_version: 0x0100,
+        session_id: Uuid::new_v4(),
+        compositor_incarnation: Uuid::new_v4(),
+        accepted_epoch: 1,
+        server_pid: std::process::id(),
+    });
+
+    let payload = serde_json::to_vec(&msg).unwrap();
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0x44, 0x50, 0x4F, 0x53]); // Magic
+    frame.extend_from_slice(&0x0100u16.to_be_bytes()); // Version
+    frame.extend_from_slice(&2u16.to_be_bytes()); // HelloAccepted
+    frame.extend_from_slice(&1u64.to_be_bytes()); // seq 1
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&payload);
+
+    s2.write_all(&frame).await.unwrap();
+
+    let res = ipc.recv_message().await;
+    match res {
+        Err(IpcError::InvalidTransition { from, msg_type }) => {
+            assert_eq!(from, SessionState::Active);
+            assert_eq!(
+                msg_type,
+                depthos_core::action_security::ipc::MessageType::HelloAccepted
+            );
+            assert_eq!(
+                ipc.session_state(),
+                SessionState::Terminated,
+                "Failed transition must terminate stream"
+            );
+        }
+        other => panic!("Expected InvalidTransition, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_regression_vulnerability_private_socket_permissions_and_type() {
+    let env = TestEnv::new();
+    let listener = bind_private_listener(&env.sock_path).unwrap();
+    verify_private_socket(&env.sock_path)
+        .expect("bind_private_listener must create valid 0600 socket");
+
+    // Insecure permissions: change mode to 0666 (group/other accessible)
+    std::fs::set_permissions(&env.sock_path, std::fs::Permissions::from_mode(0o666)).unwrap();
+    let err = verify_private_socket(&env.sock_path).unwrap_err();
+    assert!(
+        matches!(err, IpcError::UnsafePermissions(_)),
+        "verify_private_socket must reject 0666 socket permissions"
+    );
+
+    // Regular file instead of socket
+    let reg_file = env.temp_dir.path().join("not-a-socket.txt");
+    std::fs::write(&reg_file, b"regular file").unwrap();
+    std::fs::set_permissions(&reg_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let err2 = verify_private_socket(&reg_file).unwrap_err();
+    assert!(
+        matches!(err2, IpcError::UnsafePermissions(_)),
+        "verify_private_socket must reject non-socket files"
+    );
+
+    drop(listener);
+}
+
+#[test]
+fn test_regression_vulnerability_private_directory_enforces_owner_uid() {
+    let env = TestEnv::new();
+    verify_private_directory(env.temp_dir.path()).expect("Valid owner UID and 0700 dir must pass");
+
+    // Symlink directory rejection
+    let sym_dir = env.temp_dir.path().join("symlink-dir");
+    std::os::unix::fs::symlink(env.temp_dir.path(), &sym_dir).unwrap();
+    let err = verify_private_directory(&sym_dir).unwrap_err();
+    assert!(
+        matches!(err, IpcError::UnsafePermissions(_)),
+        "verify_private_directory must reject symlinked directories"
+    );
+}
+
+#[tokio::test]
+async fn test_regression_vulnerability_rejected_ack_terminal_state_consistency() {
+    let env = TestEnv::new();
+    let journal = DurableOperationJournal::open(&env.db_path).unwrap();
+    let config = sample_lease_config(id(1), id(2));
+    let session = DurableCoordinatorSession::new(journal, config, Tick(100)).unwrap();
+
+    let mut coord = CrossProcessCoordinator::new(session, "bootstrap-tok".into()).unwrap();
+    let (s1, s2) = UnixStream::pair().unwrap();
+    let mut client_ipc = IpcStream::new(s1, SessionState::Unauthenticated);
+
+    let op_id = RequestId(id(301));
+    let win = sample_window(301);
+    let native_uuid = id(302);
+    let req = sample_request(op_id, win.clone(), native_uuid);
+
+    // Server task: accepts Reserve, returns Prepared(ready=true), receives Intent & Attempt, returns Acknowledge(Rejected)
+    let srv_task = tokio::spawn(async move {
+        let mut srv_ipc = IpcStream::new(s2, SessionState::Unauthenticated);
+        // Hello
+        match srv_ipc.recv_message().await.unwrap() {
+            ProtocolMessage::Hello(h) => {
+                let accepted = HelloAcceptedMessage {
+                    protocol_version: 0x0100,
+                    session_id: h.session_id,
+                    compositor_incarnation: id(2),
+                    accepted_epoch: 1,
+                    server_pid: std::process::id(),
+                };
+                srv_ipc
+                    .send_message(&ProtocolMessage::HelloAccepted(accepted))
+                    .await
+                    .unwrap();
+                srv_ipc.set_session_state(SessionState::Active);
+            }
+            _ => panic!("Expected Hello"),
+        }
+
+        // Reserve
+        match srv_ipc.recv_message().await.unwrap() {
+            ProtocolMessage::Reserve(r) => {
+                let prep = PreparedMessage {
+                    protocol_version: 0x0100,
+                    session_id: r.session_id,
+                    operation_id: r.operation_id,
+                    lease_id: r.lease_id,
+                    compositor_incarnation: id(2),
+                    window_generation: 1,
+                    ready: true,
+                    detail: None,
+                };
+                srv_ipc
+                    .send_message(&ProtocolMessage::Prepared(prep))
+                    .await
+                    .unwrap();
+            }
+            _ => panic!("Expected Reserve"),
+        }
+
+        // DispatchIntent
+        match srv_ipc.recv_message().await.unwrap() {
+            ProtocolMessage::DispatchIntent(_) => {}
+            _ => panic!("Expected DispatchIntent"),
+        }
+
+        // SyntheticAttempt
+        match srv_ipc.recv_message().await.unwrap() {
+            ProtocolMessage::SyntheticAttempt(att) => {
+                let ack = AcknowledgeMessage {
+                    protocol_version: 0x0100,
+                    session_id: att.session_id,
+                    operation_id: att.operation_id,
+                    lease_id: att.lease_id,
+                    attempt: att.attempt,
+                    coordinator_incarnation: att.coordinator_incarnation,
+                    compositor_incarnation: att.compositor_incarnation,
+                    outcome: AckOutcome::Rejected,
+                    reason: Some("Compositor safely rejected without mutation".into()),
+                };
+                srv_ipc
+                    .send_message(&ProtocolMessage::Acknowledge(ack))
+                    .await
+                    .unwrap();
+            }
+            _ => panic!("Expected SyntheticAttempt"),
+        }
+
+        // Expect TerminalReceipt
+        match srv_ipc.recv_message().await.unwrap() {
+            ProtocolMessage::TerminalReceipt(rcpt) => {
+                assert_eq!(
+                    rcpt.final_state,
+                    DurableOperationState::Completed,
+                    "TerminalReceipt must reflect Completed state consistent with SQLite journal"
+                );
+            }
+            _ => panic!("Expected TerminalReceipt"),
+        }
+    });
+
+    coord
+        .perform_handshake(&mut client_ipc, Some(id(2)))
+        .await
+        .unwrap();
+    let state = coord
+        .dispatch_operation(
+            &mut client_ipc,
+            req,
+            Operation::MoveDesktop {
+                from: Placement {
+                    desktop: NativeDesktop("desk-src".into()),
+                    activity: "act-main".into(),
+                },
+                to: Placement {
+                    desktop: NativeDesktop("desk-dst".into()),
+                    activity: "act-main".into(),
+                },
+            },
+            "fixture-tok".into(),
+            Tick(150),
+        )
+        .await
+        .unwrap();
+
+    // The coordinator must report Completed (with terminal_outcome: Rejected in DB)
+    assert_eq!(
+        state,
+        DurableOperationState::Completed,
+        "dispatch_operation must report Completed matching SQLite journal"
+    );
+
+    // Verify DB record matches
+    let rec = coord.session.journal().get_record(op_id).unwrap();
+    assert_eq!(rec.durable_state, DurableOperationState::Completed);
+    assert_eq!(rec.terminal_outcome, Some(TerminalOutcome::Rejected));
+
+    srv_task.await.unwrap();
+}
+
+#[test]
+fn test_regression_vulnerability_reconcile_clears_both_window_and_native_uuid() {
+    let env = TestEnv::new();
+    let journal = DurableOperationJournal::open(&env.db_path).unwrap();
+    let config = sample_lease_config(id(1), id(2));
+    let mut session = DurableCoordinatorSession::new(journal, config, Tick(100)).unwrap();
+
+    let op_id = RequestId(id(310));
+    let win = sample_window(310);
+    let native_uuid = id(311);
+
+    let req = sample_request(op_id, win.clone(), native_uuid);
+    let lease_id = session.acquire(req, Tick(100), id(2)).unwrap();
+    session
+        .quarantine_lease(
+            lease_id,
+            op_id,
+            "Quarantine test",
+            Uncertainty::NoAcknowledgement,
+            Tick(150),
+        )
+        .unwrap();
+
+    assert!(session.lease_manager().is_window_quarantined(&win));
+    assert!(session.lease_manager().is_native_quarantined(&native_uuid));
+
+    let gateway = AuthoritativeReconciliationGateway::new("observer-tok".into(), id(400));
+    let valid_msg = ReconcileEvidenceMessage {
+        protocol_version: 0x0100,
+        session_id: Uuid::new_v4(),
+        operation_id: op_id,
+        evidence: ReconciliationEvidence {
+            observer_incarnation: id(400),
+            observer_sequence: 15,
+            verified_window_key: win.clone(),
+            observed_native_uuid: native_uuid,
+            observed_placement: Placement {
+                desktop: NativeDesktop("desk-dst".into()),
+                activity: "act-main".into(),
+            },
+            authoritative_decision: "reconciled_clean".into(),
+        },
+        provenance: AUTHORITATIVE_PROVENANCE.into(),
+        authority_token: "observer-tok".into(),
+    };
+
+    gateway
+        .process_reconciliation(&mut session, &valid_msg, Tick(200))
+        .unwrap();
+
+    // Both window and native_uuid MUST be cleared
+    assert!(!session.lease_manager().is_window_quarantined(&win));
+    assert!(!session.lease_manager().is_native_quarantined(&native_uuid));
+}
+
+#[test]
+fn test_regression_vulnerability_init_asserts_pragma_synchronous_full() {
+    let env = TestEnv::new();
+    let journal = DurableOperationJournal::open(&env.db_path).unwrap();
+    assert_eq!(
+        journal.pragma_synchronous().unwrap(),
+        2,
+        "PRAGMA synchronous must be 2 (FULL)"
+    );
+    assert_eq!(
+        journal.pragma_journal_mode().unwrap().to_uppercase(),
+        "WAL",
+        "PRAGMA journal_mode must be WAL"
     );
 }

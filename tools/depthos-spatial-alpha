@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""DepthOS Spatial Workspace Alpha - Standalone Development Application.
+
+Runs an interactive QtQuick scene graph window on KDE Wayland connected to the
+DepthOS Controller D-Bus service and Observer, or runs in standalone demo/mock mode
+if the controller is offline.
+
+Safe development launch commands:
+    ./tools/depthos-spatial-alpha
+    ./tools/depthos-spatial-alpha --mock
+    ./tools/depthos-spatial-alpha --reduced-motion
+    depthos ui
+"""
+import argparse
+import os
+from pathlib import Path
+import signal
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+QML_FILE = ROOT / "experiments/spatial-alpha/main.qml"
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="DepthOS Spatial Workspace Alpha Standalone Viewport"
+    )
+    parser.add_argument(
+        "--mock", "--demo",
+        action="store_true",
+        help="Force standalone demo/mock mode even if DepthOS Controller D-Bus is available"
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        help="Optional DepthOS SQLite database to read logical hierarchy from"
+    )
+    parser.add_argument(
+        "--reduced-motion",
+        action="store_true",
+        help="Enable reduced motion mode (instant animations)"
+    )
+    parser.add_argument(
+        "--offscreen",
+        action="store_true",
+        help="Run using offscreen QPA platform (for automated test validation)"
+    )
+    parser.add_argument(
+        "--quit-after-ms",
+        type=int,
+        default=0,
+        help="Automatically quit after specified milliseconds (for testing)"
+    )
+    args = parser.parse_args()
+
+    # Configure platform environment
+    if args.offscreen:
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        os.environ["QT_QUICK_BACKEND"] = "software"
+    elif "WAYLAND_DISPLAY" in os.environ:
+        os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+
+    # Import PyQt6
+    try:
+        from PyQt6.QtCore import QUrl, QTimer
+        from PyQt6.QtGui import QGuiApplication
+        from PyQt6.QtQml import QQmlApplicationEngine
+    except ImportError as e:
+        sys.stderr.write(f"depthos-spatial-alpha: PyQt6 is required but could not be imported: {e}\n")
+        sys.exit(1)
+
+    app = QGuiApplication(sys.argv)
+    app.setApplicationName("DepthOS Spatial Workspace Alpha")
+    app.setOrganizationName("DepthOS")
+    app.setOrganizationDomain("org.depthos")
+
+    # Allow clean Ctrl+C termination
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    sigint_timer = QTimer()
+    sigint_timer.timeout.connect(lambda: None)
+    sigint_timer.start(250)
+
+    engine = QQmlApplicationEngine()
+
+    # Verify D-Bus connection or determine mode
+    is_mock = args.mock
+    if not is_mock:
+        try:
+            from PyQt6.QtDBus import QDBusConnection, QDBusInterface
+            bus = QDBusConnection.sessionBus()
+            if not bus.isConnected():
+                is_mock = True
+            else:
+                iface = QDBusInterface("org.depthos.Controller", "/org/depthos/Controller", "org.depthos.Controller1", bus)
+                if not iface.isValid():
+                    # Controller not currently running, default to standalone demo mode
+                    is_mock = True
+        except Exception:
+            is_mock = True
+
+    if is_mock:
+        print("[depthos-spatial-alpha] Running in Standalone Demo/Mock Mode (Controller offline or --mock flag set).")
+    else:
+        print("[depthos-spatial-alpha] Connected to org.depthos.Controller on session bus.")
+
+    if not QML_FILE.exists():
+        sys.stderr.write(f"depthos-spatial-alpha: QML file not found: {QML_FILE}\n")
+        sys.exit(1)
+
+    engine.load(QUrl.fromLocalFile(str(QML_FILE)))
+
+    if not engine.rootObjects():
+        sys.stderr.write("depthos-spatial-alpha: Failed to load QML root object\n")
+        sys.exit(1)
+
+    root = engine.rootObjects()[0]
+    if args.reduced_motion:
+        root.setProperty("reducedMotion", True)
+
+    if args.quit_after_ms > 0:
+        QTimer.singleShot(args.quit_after_ms, app.quit)
+
+    print("[depthos-spatial-alpha] Spatial viewport loaded successfully. Press H/J/K/L, Enter, Esc, /.")
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

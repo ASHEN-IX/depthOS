@@ -44,6 +44,24 @@ enum Command {
     /// Run a foreground logical/observation/context controller.
     #[command(subcommand)]
     Controller(ControllerCommand),
+    /// Launch the standalone Spatial Workspace Alpha UI.
+    Ui(UiCommand),
+}
+
+#[derive(clap::Args, Clone, Debug)]
+pub struct UiCommand {
+    /// Force standalone demo/mock mode even if DepthOS Controller D-Bus is available
+    #[arg(long, short)]
+    pub mock: bool,
+    /// Enable reduced motion mode (instant animations)
+    #[arg(long)]
+    pub reduced_motion: bool,
+    /// Run using offscreen QPA platform (for automated test validation)
+    #[arg(long)]
+    pub offscreen: bool,
+    /// Automatically quit after specified milliseconds (for testing)
+    #[arg(long, default_value_t = 0)]
+    pub quit_after_ms: u64,
 }
 
 #[derive(Subcommand)]
@@ -220,13 +238,81 @@ fn run(cli: Cli) -> Result<bool> {
             DesktopCommand::Delete { id } => service.delete_desktop(id)?,
         },
         Command::Tree => json(service.tree()?)?,
-        Command::Doctor | Command::System(_) | Command::Controller(_) => unreachable!(),
+        Command::Doctor | Command::System(_) | Command::Controller(_) | Command::Ui(_) => {
+            unreachable!()
+        }
     }
     Ok(true)
 }
 
+fn run_ui(cli: &Cli, command: &UiCommand) -> ExitCode {
+    let mut candidate_paths = vec![
+        PathBuf::from("tools/depthos-spatial-alpha"),
+        PathBuf::from("./tools/depthos-spatial-alpha"),
+    ];
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        candidate_paths.push(parent.join("tools/depthos-spatial-alpha"));
+        if let Some(grandparent) = parent.parent() {
+            candidate_paths.push(grandparent.join("tools/depthos-spatial-alpha"));
+            if let Some(great) = grandparent.parent() {
+                candidate_paths.push(great.join("tools/depthos-spatial-alpha"));
+            }
+        }
+    }
+    candidate_paths.push(PathBuf::from(
+        "/home/ashenix/Projects/DepthOS-phase-4-1/tools/depthos-spatial-alpha",
+    ));
+
+    let runner = candidate_paths.into_iter().find(|p| p.exists());
+    let runner_path = match runner {
+        Some(path) => path,
+        None => {
+            eprintln!("depthos: could not locate tools/depthos-spatial-alpha");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut process = std::process::Command::new(&runner_path);
+    if let Some(db) = &cli.db {
+        process.arg("--db").arg(db);
+    }
+    if command.mock {
+        process.arg("--mock");
+    }
+    if command.reduced_motion {
+        process.arg("--reduced-motion");
+    }
+    if command.offscreen {
+        process.arg("--offscreen");
+    }
+    if command.quit_after_ms > 0 {
+        process
+            .arg("--quit-after-ms")
+            .arg(command.quit_after_ms.to_string());
+    }
+
+    match process.status() {
+        Ok(status) => {
+            if status.success() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(e) => {
+            eprintln!("depthos: failed to execute spatial UI runner: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Ui(command) = &cli.command {
+        return run_ui(&cli, command);
+    }
     if let Command::Controller(ControllerCommand::Run { timeout_seconds }) = &cli.command {
         let result = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)

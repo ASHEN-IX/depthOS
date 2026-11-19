@@ -21,13 +21,14 @@
 //! No production capability issuer, writable D-Bus method, or persistent native setter exists.
 
 use super::{Error, Operation, RequestId, Tick, Uncertainty, WindowKey};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct LeaseId(pub Uuid);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseReservation {
     pub id: LeaseId,
     pub operation_id: RequestId,
@@ -47,13 +48,13 @@ pub struct LeaseReservation {
     pub expires_at: Tick,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TerminalOutcome {
     Applied,
     Rejected,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeaseState {
     Active(Box<LeaseReservation>),
     Revoked {

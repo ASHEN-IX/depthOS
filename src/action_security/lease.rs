@@ -228,10 +228,13 @@ pub struct CoordinatorLeaseManager {
     locked_native_uuids: BTreeMap<Uuid, LeaseId>,
     quarantined_windows: BTreeMap<WindowKey, (LeaseId, Uncertainty, Tick)>,
     quarantined_native_uuids: BTreeMap<Uuid, WindowKey>,
+    quarantined_runtime_ids: BTreeMap<(Uuid, String), (LeaseId, WindowKey)>,
     history: BTreeMap<LeaseId, LeaseState>,
     consumed_operations: BTreeSet<RequestId>,
     current_time: Tick,
 }
+
+pub type LeaseManager = CoordinatorLeaseManager;
 
 impl CoordinatorLeaseManager {
     pub fn new(config: LeaseConfig, start_time: Tick) -> Self {
@@ -250,6 +253,7 @@ impl CoordinatorLeaseManager {
             locked_native_uuids: BTreeMap::new(),
             quarantined_windows: BTreeMap::new(),
             quarantined_native_uuids: BTreeMap::new(),
+            quarantined_runtime_ids: BTreeMap::new(),
             history: BTreeMap::new(),
             consumed_operations: BTreeSet::new(),
             current_time: start_time,
@@ -315,6 +319,12 @@ impl CoordinatorLeaseManager {
             return Err(LeaseError::Conflict);
         }
         if self.quarantined_native_uuids.contains_key(&native_uuid) {
+            return Err(LeaseError::Quarantined);
+        }
+        if self
+            .quarantined_runtime_ids
+            .contains_key(&(window.epoch, window.runtime_id.clone()))
+        {
             return Err(LeaseError::Quarantined);
         }
         Ok(())
@@ -454,6 +464,13 @@ impl CoordinatorLeaseManager {
             .insert(reservation.window.clone(), (id, uncertainty, now));
         self.quarantined_native_uuids
             .insert(reservation.native_uuid, reservation.window.clone());
+        self.quarantined_runtime_ids.insert(
+            (
+                reservation.window.epoch,
+                reservation.window.runtime_id.clone(),
+            ),
+            (id, reservation.window.clone()),
+        );
         self.history.insert(
             id,
             LeaseState::Quarantined {
@@ -536,6 +553,13 @@ impl CoordinatorLeaseManager {
                     .insert(reservation.window.clone(), (id, uncertainty, now));
                 self.quarantined_native_uuids
                     .insert(reservation.native_uuid, reservation.window.clone());
+                self.quarantined_runtime_ids.insert(
+                    (
+                        reservation.window.epoch,
+                        reservation.window.runtime_id.clone(),
+                    ),
+                    (id, reservation.window.clone()),
+                );
                 self.history.insert(
                     id,
                     LeaseState::Quarantined {
@@ -599,7 +623,11 @@ impl CoordinatorLeaseManager {
     pub fn reconcile_quarantined_window(&mut self, window: &WindowKey) -> bool {
         let win_removed = self.quarantined_windows.remove(window).is_some();
         self.quarantined_native_uuids.retain(|_, win| win != window);
-        win_removed
+        let runtime_removed = self
+            .quarantined_runtime_ids
+            .remove(&(window.epoch, window.runtime_id.clone()))
+            .is_some();
+        win_removed || runtime_removed
     }
 
     pub fn reconcile_quarantined_resource(
@@ -609,7 +637,34 @@ impl CoordinatorLeaseManager {
     ) -> bool {
         let win_removed = self.quarantined_windows.remove(window).is_some();
         let uuid_removed = self.quarantined_native_uuids.remove(&native_uuid).is_some();
-        win_removed || uuid_removed
+        let runtime_removed = self
+            .quarantined_runtime_ids
+            .remove(&(window.epoch, window.runtime_id.clone()))
+            .is_some();
+        win_removed || uuid_removed || runtime_removed
+    }
+
+    pub fn is_runtime_id_quarantined(&self, epoch: &Uuid, runtime_id: &str) -> bool {
+        self.quarantined_runtime_ids
+            .contains_key(&(*epoch, runtime_id.to_string()))
+    }
+
+    pub fn restore_quarantined_record(
+        &mut self,
+        lease_id: LeaseId,
+        window: WindowKey,
+        native_uuid: Uuid,
+        uncertainty: Uncertainty,
+        at: Tick,
+    ) {
+        self.quarantined_windows
+            .insert(window.clone(), (lease_id, uncertainty, at));
+        self.quarantined_native_uuids
+            .insert(native_uuid, window.clone());
+        self.quarantined_runtime_ids.insert(
+            (window.epoch, window.runtime_id.clone()),
+            (lease_id, window),
+        );
     }
 
     pub fn get_reservation_state(&self, id: &LeaseId) -> Option<&LeaseState> {

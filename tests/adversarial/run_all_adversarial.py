@@ -89,9 +89,38 @@ def main():
         "cargo", "test", "--test", "cross_process_durable", "--locked", "--offline"
     ])
 
+    # Step 9: Phase 3.10.1 Native Authority Adversarial Test (ASan + UBSan)
+    bin_path_3_10_1 = ROOT / "target/adversarial_native_authority_3_10_1"
+    compile_cmd_3_10_1 = [
+        "c++", "-std=c++20", "-fPIC", "-Wall", "-Wextra", "-Werror", "-g",
+        "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer",
+        "-DDEPTHOS_AUTHORITY_UNIT_TEST",
+        "-I", str(ROOT / "experiments/kwin-authority/native"),
+        str(ROOT / "tests/adversarial/test_native_authority_phase_3_10_1.cpp"),
+        "-o", str(bin_path_3_10_1),
+        *cflags, *libs
+    ]
+    run_step("Compile Phase 3.10.1 Native Authority Adversarial Test (ASan + UBSan)", compile_cmd_3_10_1)
+    run_step("Execute Phase 3.10.1 Native Authority Adversarial Test", [str(bin_path_3_10_1)])
+
+    # Step 10: Phase 3.10.1 IPC & Process Trust Adversarial Test
+    run_step("Execute Phase 3.10.1 IPC & Process Trust Adversarial Test", [
+        sys.executable, str(ROOT / "tests/adversarial/test_phase_3_10_1_ipc_trust_adversarial.py")
+    ])
+
+    # Step 11: Phase 3.10.1 Rust Adversarial Suite
+    run_step("Execute Phase 3.10.1 Durable & Reconciliation Suite (Rust)", [
+        "cargo", "test", "--test", "adversarial_phase_3_10_1", "--locked", "--offline"
+    ])
+
+    # Step 12: Phase 3.10.1 Real Private KWin Cross-Process Integration Runner
+    run_step("Execute Phase 3.10.1 Real Private KWin Integration Runner", [
+        sys.executable, str(ROOT / "tests/phase-3-native/run_phase_3_10_native.py")
+    ])
+
     total_duration = time.monotonic() - start_total
     print("\n=======================================================")
-    print(f"=== ALL PHASE 3.8 / 3.9 / 3.10 ADVERSARIAL SUITES PASSED ({total_duration:.2f}s) ===")
+    print(f"=== ALL PHASE 3.8 / 3.9 / 3.10 / 3.10.1 ADVERSARIAL SUITES PASSED ({total_duration:.2f}s) ===")
     print("=======================================================")
 
 

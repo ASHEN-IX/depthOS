@@ -38,12 +38,32 @@ pub enum ReconciliationError {
     NativeUuidMismatch { expected: Uuid, got: Uuid },
     #[error("Observer incarnation mismatch: expected {expected}, got {got}")]
     ObserverIncarnationMismatch { expected: Uuid, got: Uuid },
+    #[error("Coordinator incarnation mismatch: expected {expected}, got {got}")]
+    CoordinatorIncarnationMismatch { expected: Uuid, got: Uuid },
+    #[error("Compositor incarnation mismatch: expected {expected}, got {got}")]
+    CompositorIncarnationMismatch { expected: Uuid, got: Uuid },
+    #[error("Operation ID mismatch: expected {expected:?}, got {got:?}")]
+    OperationIdMismatch {
+        expected: super::RequestId,
+        got: super::RequestId,
+    },
+    #[error("Lease ID mismatch: expected {expected:?}, got {got:?}")]
+    LeaseIdMismatch {
+        expected: super::lease::LeaseId,
+        got: super::lease::LeaseId,
+    },
     #[error(
         "Stale observer sequence number: recorded {recorded}, received {received} (must be strictly greater)"
     )]
     StaleObserverSequence { recorded: u64, received: u64 },
     #[error("Empty or invalid authoritative decision in evidence")]
     EmptyAuthoritativeDecision,
+    #[error(
+        "Unproven execution: observer snapshot only observes current placement but cannot prove who moved the window; quarantine retained"
+    )]
+    UnprovenExecutionObserverSnapshotOnly,
+    #[error("Uncertain reconciliation outcome: quarantine retained indefinitely")]
+    UncertainOutcome,
     #[error("Durable storage error: {0}")]
     Durable(#[from] DurableError),
     #[error("IPC protocol error: {0}")]
@@ -118,6 +138,44 @@ impl AuthoritativeReconciliationGateway {
             });
         }
 
+        // 6b. Verify explicit bindings if provided in evidence
+        if let Some(op_id) = msg
+            .evidence
+            .operation_id
+            .filter(|&id| id != msg.operation_id || id != rec.operation_id)
+        {
+            return Err(ReconciliationError::OperationIdMismatch {
+                expected: rec.operation_id,
+                got: op_id,
+            });
+        }
+        if let Some(lease_id) = msg.evidence.lease_id.filter(|&lid| lid != rec.lease_id) {
+            return Err(ReconciliationError::LeaseIdMismatch {
+                expected: rec.lease_id,
+                got: lease_id,
+            });
+        }
+        if let Some(coord_inc) = msg
+            .evidence
+            .coordinator_incarnation
+            .filter(|&cid| cid != rec.coordinator_incarnation)
+        {
+            return Err(ReconciliationError::CoordinatorIncarnationMismatch {
+                expected: rec.coordinator_incarnation,
+                got: coord_inc,
+            });
+        }
+        if let Some(comp_inc) = msg
+            .evidence
+            .compositor_incarnation
+            .filter(|&cid| cid != rec.compositor_incarnation)
+        {
+            return Err(ReconciliationError::CompositorIncarnationMismatch {
+                expected: rec.compositor_incarnation,
+                got: comp_inc,
+            });
+        }
+
         // 7. Strict fresh sequence enforcement: seq > rec.observer_version_seq
         if msg.evidence.observer_sequence <= rec.observer_version_seq {
             return Err(ReconciliationError::StaleObserverSequence {
@@ -129,6 +187,20 @@ impl AuthoritativeReconciliationGateway {
         // 8. Decision validation
         if msg.evidence.authoritative_decision.trim().is_empty() {
             return Err(ReconciliationError::EmptyAuthoritativeDecision);
+        }
+
+        // 8b. Evidence source & terminal claim validation (Section 6)
+        match msg.evidence.evidence_source {
+            super::durable::EvidenceSource::ObserverSnapshotOnly => {
+                return Err(ReconciliationError::UnprovenExecutionObserverSnapshotOnly);
+            }
+            super::durable::EvidenceSource::Uncertain => {
+                return Err(ReconciliationError::UncertainOutcome);
+            }
+            super::durable::EvidenceSource::CompositorExecutionReceipt
+            | super::durable::EvidenceSource::ProvenNonExecution => {
+                // Authoritative resolution established
+            }
         }
 
         // 9. Commit reconciliation transition in durable SQLite journal

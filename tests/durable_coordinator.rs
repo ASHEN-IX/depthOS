@@ -318,17 +318,17 @@ fn test_authoritative_reconciliation_workflow() {
     );
 
     // Bogus evidence: empty decision -> Rejected
-    let bogus = ReconciliationEvidence {
-        observer_incarnation: Uuid::new_v4(),
-        observer_sequence: 1,
-        verified_window_key: window.clone(),
-        observed_native_uuid: Uuid::new_v4(),
-        observed_placement: Placement {
+    let bogus = ReconciliationEvidence::new(
+        Uuid::new_v4(),
+        1,
+        window.clone(),
+        Uuid::new_v4(),
+        Placement {
             desktop: NativeDesktop("desk-1".to_string()),
             activity: "act-1".to_string(),
         },
-        authoritative_decision: "   ".to_string(),
-    };
+        "   ",
+    );
     let bogus_err = session
         .reconcile_quarantine(op_id, bogus, Tick(300))
         .unwrap_err();
@@ -336,17 +336,17 @@ fn test_authoritative_reconciliation_workflow() {
 
     // Valid authoritative evidence -> Reconciled
     let native_uuid = session.journal().get_record(op_id).unwrap().native_uuid;
-    let valid = ReconciliationEvidence {
-        observer_incarnation: config.observer_incarnation,
-        observer_sequence: 12,
-        verified_window_key: window.clone(),
-        observed_native_uuid: native_uuid,
-        observed_placement: Placement {
+    let valid = ReconciliationEvidence::new(
+        config.observer_incarnation,
+        12,
+        window.clone(),
+        native_uuid,
+        Placement {
             desktop: NativeDesktop("desk-2".to_string()),
             activity: "act-1".to_string(),
         },
-        authoritative_decision: "AuthoritativeSnapshotReconciledPlacement".to_string(),
-    };
+        "AuthoritativeSnapshotReconciledPlacement",
+    );
 
     session
         .reconcile_quarantine(op_id, valid, Tick(350))

@@ -328,17 +328,17 @@ fn test_adversarial_quarantine_bypass_and_bogus_reconciliation() {
     );
 
     // Attack 2: Bogus evidence - mismatched window key
-    let bogus_win = ReconciliationEvidence {
-        observer_incarnation: id(400),
-        observer_sequence: 20,
-        verified_window_key: sample_window(999),
-        observed_native_uuid: native_uuid,
-        observed_placement: Placement {
+    let bogus_win = ReconciliationEvidence::new(
+        id(400),
+        20,
+        sample_window(999),
+        native_uuid,
+        Placement {
             desktop: NativeDesktop("desktop-2".into()),
             activity: "activity-default".into(),
         },
-        authoritative_decision: "VerifiedCorrectPlacement".into(),
-    };
+        "VerifiedCorrectPlacement",
+    );
     assert_eq!(
         session
             .reconcile_quarantine(op_id, bogus_win, Tick(300))
@@ -347,17 +347,17 @@ fn test_adversarial_quarantine_bypass_and_bogus_reconciliation() {
     );
 
     // Attack 3: Bogus evidence - mismatched native UUID
-    let bogus_uuid = ReconciliationEvidence {
-        observer_incarnation: id(400),
-        observer_sequence: 20,
-        verified_window_key: window.clone(),
-        observed_native_uuid: id(9999),
-        observed_placement: Placement {
+    let bogus_uuid = ReconciliationEvidence::new(
+        id(400),
+        20,
+        window.clone(),
+        id(9999),
+        Placement {
             desktop: NativeDesktop("desktop-2".into()),
             activity: "activity-default".into(),
         },
-        authoritative_decision: "VerifiedCorrectPlacement".into(),
-    };
+        "VerifiedCorrectPlacement",
+    );
     assert_eq!(
         session
             .reconcile_quarantine(op_id, bogus_uuid, Tick(300))
@@ -366,17 +366,17 @@ fn test_adversarial_quarantine_bypass_and_bogus_reconciliation() {
     );
 
     // Attack 4: Bogus evidence - empty / whitespace decision
-    let bogus_empty = ReconciliationEvidence {
-        observer_incarnation: id(400),
-        observer_sequence: 20,
-        verified_window_key: window.clone(),
-        observed_native_uuid: native_uuid,
-        observed_placement: Placement {
+    let bogus_empty = ReconciliationEvidence::new(
+        id(400),
+        20,
+        window.clone(),
+        native_uuid,
+        Placement {
             desktop: NativeDesktop("desktop-2".into()),
             activity: "activity-default".into(),
         },
-        authoritative_decision: "   \t\n  ".into(),
-    };
+        "   \t\n  ",
+    );
     assert_eq!(
         session
             .reconcile_quarantine(op_id, bogus_empty, Tick(300))
@@ -394,17 +394,17 @@ fn test_adversarial_quarantine_bypass_and_bogus_reconciliation() {
     );
 
     // Legitimate reconciliation
-    let valid_evidence = ReconciliationEvidence {
-        observer_incarnation: id(400),
-        observer_sequence: 20,
-        verified_window_key: window.clone(),
-        observed_native_uuid: native_uuid,
-        observed_placement: Placement {
+    let valid_evidence = ReconciliationEvidence::new(
+        id(400),
+        20,
+        window.clone(),
+        native_uuid,
+        Placement {
             desktop: NativeDesktop("desktop-2".into()),
             activity: "activity-default".into(),
         },
-        authoritative_decision: "AuthoritativeSnapshotReconciliation".into(),
-    };
+        "AuthoritativeSnapshotReconciliation",
+    );
     session
         .reconcile_quarantine(op_id, valid_evidence, Tick(350))
         .unwrap();
@@ -621,17 +621,17 @@ fn test_regression_vulnerability_reconciliation_stale_seq_and_unverified_authori
         .unwrap();
 
     // VULNERABILITY TEST 1: Stale observer sequence (<= res.observer_version_seq which is 1)
-    let stale_seq_evidence = ReconciliationEvidence {
-        observer_incarnation: obs_inc,
-        observer_sequence: 1, // Stale! Must be strictly > 1 (the reservation sequence)
-        verified_window_key: window.clone(),
-        observed_native_uuid: native_uuid,
-        observed_placement: Placement {
+    let stale_seq_evidence = ReconciliationEvidence::new(
+        obs_inc,
+        1, // Stale! Must be strictly > 1 (the reservation sequence)
+        window.clone(),
+        native_uuid,
+        Placement {
             desktop: NativeDesktop("desktop-2".into()),
             activity: "activity-default".into(),
         },
-        authoritative_decision: "StaleSnapshotClaim".into(),
-    };
+        "StaleSnapshotClaim",
+    );
 
     // This should fail closed with ReconciliationRejected because sequence is not fresh!
     let err = journal
@@ -640,17 +640,17 @@ fn test_regression_vulnerability_reconciliation_stale_seq_and_unverified_authori
     assert_eq!(err, DurableError::ReconciliationRejected);
 
     // VULNERABILITY TEST 2: Wrong observer incarnation
-    let wrong_obs_evidence = ReconciliationEvidence {
-        observer_incarnation: id(99999), // Mismatched observer incarnation!
-        observer_sequence: 20,
-        verified_window_key: window.clone(),
-        observed_native_uuid: native_uuid,
-        observed_placement: Placement {
+    let wrong_obs_evidence = ReconciliationEvidence::new(
+        id(99999), // Mismatched observer incarnation!
+        20,
+        window.clone(),
+        native_uuid,
+        Placement {
             desktop: NativeDesktop("desktop-2".into()),
             activity: "activity-default".into(),
         },
-        authoritative_decision: "ForgedObsClaim".into(),
-    };
+        "ForgedObsClaim",
+    );
 
     let err2 = journal
         .reconcile_quarantined_operation(op_id, wrong_obs_evidence, Tick(200))

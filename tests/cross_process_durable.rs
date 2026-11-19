@@ -634,17 +634,17 @@ fn test_adversarial_forged_reconciliation_rejected() {
         protocol_version: 0x0100,
         session_id: Uuid::new_v4(),
         operation_id: op_id,
-        evidence: ReconciliationEvidence {
-            observer_incarnation: id(400),
-            observer_sequence: 15, // Fresh sequence
-            verified_window_key: win.clone(),
-            observed_native_uuid: native_uuid,
-            observed_placement: Placement {
+        evidence: ReconciliationEvidence::new(
+            id(400),
+            15, // Fresh sequence
+            win.clone(),
+            native_uuid,
+            Placement {
                 desktop: NativeDesktop("desk-dst".into()),
                 activity: "act-main".into(),
             },
-            authoritative_decision: "reconciled_after_observer_sync".into(),
-        },
+            "reconciled_after_observer_sync",
+        ),
         provenance: "depthos.controller.untrusted".into(),
         authority_token: "observer-auth-secret-128".into(),
     };
@@ -709,17 +709,17 @@ fn test_adversarial_stale_observer_seq_rejected() {
         protocol_version: 0x0100,
         session_id: Uuid::new_v4(),
         operation_id: op_id,
-        evidence: ReconciliationEvidence {
-            observer_incarnation: id(400),
-            observer_sequence: 10, // Stale!
-            verified_window_key: win.clone(),
-            observed_native_uuid: native_uuid,
-            observed_placement: Placement {
+        evidence: ReconciliationEvidence::new(
+            id(400),
+            10, // Stale!
+            win.clone(),
+            native_uuid,
+            Placement {
                 desktop: NativeDesktop("desk-dst".into()),
                 activity: "act-main".into(),
             },
-            authoritative_decision: "stale_attempt".into(),
-        },
+            "stale_attempt",
+        ),
         provenance: AUTHORITATIVE_PROVENANCE.into(),
         authority_token: "observer-auth-secret-128".into(),
     };
@@ -740,17 +740,17 @@ fn test_adversarial_stale_observer_seq_rejected() {
         protocol_version: 0x0100,
         session_id: Uuid::new_v4(),
         operation_id: op_id,
-        evidence: ReconciliationEvidence {
-            observer_incarnation: id(400),
-            observer_sequence: 11, // Fresh!
-            verified_window_key: win.clone(),
-            observed_native_uuid: native_uuid,
-            observed_placement: Placement {
+        evidence: ReconciliationEvidence::new(
+            id(400),
+            11, // Fresh!
+            win.clone(),
+            native_uuid,
+            Placement {
                 desktop: NativeDesktop("desk-dst".into()),
                 activity: "act-main".into(),
             },
-            authoritative_decision: "valid_fresh_reconciliation".into(),
-        },
+            "valid_fresh_reconciliation",
+        ),
         provenance: AUTHORITATIVE_PROVENANCE.into(),
         authority_token: "observer-auth-secret-128".into(),
     };
@@ -1186,17 +1186,17 @@ fn test_regression_vulnerability_reconcile_clears_both_window_and_native_uuid() 
         protocol_version: 0x0100,
         session_id: Uuid::new_v4(),
         operation_id: op_id,
-        evidence: ReconciliationEvidence {
-            observer_incarnation: id(400),
-            observer_sequence: 15,
-            verified_window_key: win.clone(),
-            observed_native_uuid: native_uuid,
-            observed_placement: Placement {
+        evidence: ReconciliationEvidence::new(
+            id(400),
+            15,
+            win.clone(),
+            native_uuid,
+            Placement {
                 desktop: NativeDesktop("desk-dst".into()),
                 activity: "act-main".into(),
             },
-            authoritative_decision: "reconciled_clean".into(),
-        },
+            "reconciled_clean",
+        ),
         provenance: AUTHORITATIVE_PROVENANCE.into(),
         authority_token: "observer-tok".into(),
     };

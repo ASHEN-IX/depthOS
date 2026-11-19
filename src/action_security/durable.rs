@@ -219,6 +219,24 @@ impl From<LeaseError> for DurableError {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum EvidenceSource {
+    #[default]
+    CompositorExecutionReceipt,
+    ObserverSnapshotOnly,
+    ProvenNonExecution,
+    Uncertain,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TerminalClaim {
+    #[default]
+    Applied,
+    Rejected,
+    Expired,
+    Uncertain,
+}
+
 /// Authoritative external evidence required to release a quarantined window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReconciliationEvidence {
@@ -228,6 +246,47 @@ pub struct ReconciliationEvidence {
     pub observed_native_uuid: Uuid,
     pub observed_placement: Placement,
     pub authoritative_decision: String,
+    #[serde(default)]
+    pub evidence_source: EvidenceSource,
+    #[serde(default)]
+    pub terminal_claim: TerminalClaim,
+    #[serde(default)]
+    pub dispatch_attempt: u32,
+    #[serde(default)]
+    pub operation_id: Option<RequestId>,
+    #[serde(default)]
+    pub lease_id: Option<LeaseId>,
+    #[serde(default)]
+    pub coordinator_incarnation: Option<Uuid>,
+    #[serde(default)]
+    pub compositor_incarnation: Option<Uuid>,
+}
+
+impl ReconciliationEvidence {
+    pub fn new(
+        observer_incarnation: Uuid,
+        observer_sequence: u64,
+        verified_window_key: WindowKey,
+        observed_native_uuid: Uuid,
+        observed_placement: Placement,
+        authoritative_decision: impl Into<String>,
+    ) -> Self {
+        Self {
+            observer_incarnation,
+            observer_sequence,
+            verified_window_key,
+            observed_native_uuid,
+            observed_placement,
+            authoritative_decision: authoritative_decision.into(),
+            evidence_source: EvidenceSource::CompositorExecutionReceipt,
+            terminal_claim: TerminalClaim::Applied,
+            dispatch_attempt: 1,
+            operation_id: None,
+            lease_id: None,
+            coordinator_incarnation: None,
+            compositor_incarnation: None,
+        }
+    }
 }
 
 /// Durable operation record stored in SQLite.
@@ -476,26 +535,52 @@ impl DurableOperationJournal {
             .map_err(|e| DurableError::Database(format!("JSON serialization error: {e}")))?;
 
         let mut stmt = self.conn.prepare(
-            "SELECT operation_id, durable_state FROM operation_journal
-             WHERE (window_key = ?1 OR native_uuid = ?2) AND durable_state NOT IN ('Completed', 'Aborted', 'Reconciled')
-             LIMIT 1",
+            "SELECT operation_id, durable_state, window_key, native_uuid FROM operation_journal
+             WHERE durable_state NOT IN ('Completed', 'Aborted', 'Reconciled')",
         )?;
 
-        let res = stmt
-            .query_row(params![window_json, native_uuid.to_string()], |row| {
-                let op_id: String = row.get(0)?;
-                let state_str: String = row.get(1)?;
-                Ok((op_id, state_str))
-            })
-            .optional()?;
+        let rows = stmt.query_map([], |row| {
+            let op_id: String = row.get(0)?;
+            let state_str: String = row.get(1)?;
+            let win_str: String = row.get(2)?;
+            let uuid_str: String = row.get(3)?;
+            Ok((op_id, state_str, win_str, uuid_str))
+        })?;
 
-        if let Some((_, state_str)) = res {
+        for r in rows {
+            let (_op_id, state_str, win_str, uuid_str) = r?;
             let state = DurableOperationState::parse_str(&state_str)
                 .unwrap_or(DurableOperationState::Quarantined);
-            if state.is_quarantined_or_uncertain() {
-                return Err(DurableError::WindowQuarantined);
-            } else {
-                return Err(DurableError::WindowLocked);
+            let is_quarantine = state.is_quarantined_or_uncertain();
+
+            // 1. Same live native object or same UUID with different generation
+            if uuid_str == native_uuid.to_string() {
+                return if is_quarantine {
+                    Err(DurableError::WindowQuarantined)
+                } else {
+                    Err(DurableError::WindowLocked)
+                };
+            }
+
+            // 2. Exact window_key match
+            if win_str == window_json {
+                return if is_quarantine {
+                    Err(DurableError::WindowQuarantined)
+                } else {
+                    Err(DurableError::WindowLocked)
+                };
+            }
+
+            // 3. Reused runtime ID in same observer epoch
+            if serde_json::from_str::<WindowKey>(&win_str)
+                .ok()
+                .is_some_and(|w| w.epoch == window.epoch && w.runtime_id == window.runtime_id)
+            {
+                return if is_quarantine {
+                    Err(DurableError::WindowQuarantined)
+                } else {
+                    Err(DurableError::WindowLocked)
+                };
             }
         }
 
@@ -532,25 +617,58 @@ impl DurableOperationJournal {
         let window_json = serde_json::to_string(&res.window)
             .map_err(|e| DurableError::Database(format!("JSON serialization error: {e}")))?;
 
-        let active_state: Option<String> = tx
-            .query_row(
-                "SELECT durable_state FROM operation_journal
-                 WHERE (window_key = ?1 OR native_uuid = ?2) AND durable_state NOT IN ('Completed', 'Aborted', 'Reconciled')
-                 LIMIT 1",
-                params![window_json, res.native_uuid.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let mut check_stmt = tx.prepare(
+            "SELECT operation_id, durable_state, window_key, native_uuid FROM operation_journal
+             WHERE durable_state NOT IN ('Completed', 'Aborted', 'Reconciled')",
+        )?;
 
-        if let Some(state_str) = active_state {
+        let rows = check_stmt.query_map([], |row| {
+            let op_id: String = row.get(0)?;
+            let state_str: String = row.get(1)?;
+            let win_str: String = row.get(2)?;
+            let uuid_str: String = row.get(3)?;
+            Ok((op_id, state_str, win_str, uuid_str))
+        })?;
+
+        for r in rows {
+            let (_op_id, state_str, win_str, uuid_str) = r?;
             let state = DurableOperationState::parse_str(&state_str)
                 .unwrap_or(DurableOperationState::Quarantined);
-            if state.is_quarantined_or_uncertain() {
-                return Err(DurableError::WindowQuarantined);
-            } else {
-                return Err(DurableError::WindowLocked);
+            let is_quarantine = state.is_quarantined_or_uncertain();
+
+            // 1. Same live native object or same UUID with different generation
+            if uuid_str == res.native_uuid.to_string() {
+                return if is_quarantine {
+                    Err(DurableError::WindowQuarantined)
+                } else {
+                    Err(DurableError::WindowLocked)
+                };
+            }
+
+            // 2. Exact window_key match
+            if win_str == window_json {
+                return if is_quarantine {
+                    Err(DurableError::WindowQuarantined)
+                } else {
+                    Err(DurableError::WindowLocked)
+                };
+            }
+
+            // 3. Reused runtime ID in same observer epoch
+            if serde_json::from_str::<WindowKey>(&win_str)
+                .ok()
+                .is_some_and(|w| {
+                    w.epoch == res.window.epoch && w.runtime_id == res.window.runtime_id
+                })
+            {
+                return if is_quarantine {
+                    Err(DurableError::WindowQuarantined)
+                } else {
+                    Err(DurableError::WindowLocked)
+                };
             }
         }
+        drop(check_stmt);
 
         let op_type = match &res.operation {
             Operation::Associate { .. } => "Associate",
@@ -855,6 +973,35 @@ impl DurableOperationJournal {
             return Err(DurableError::ReconciliationRejected);
         }
         if evidence.authoritative_decision.trim().is_empty() {
+            return Err(DurableError::ReconciliationRejected);
+        }
+        if evidence.evidence_source == EvidenceSource::ObserverSnapshotOnly
+            || evidence.evidence_source == EvidenceSource::Uncertain
+        {
+            return Err(DurableError::ReconciliationRejected);
+        }
+        if evidence
+            .operation_id
+            .is_some_and(|op_id| op_id != rec.operation_id)
+        {
+            return Err(DurableError::ReconciliationRejected);
+        }
+        if evidence
+            .lease_id
+            .is_some_and(|lease_id| lease_id != rec.lease_id)
+        {
+            return Err(DurableError::ReconciliationRejected);
+        }
+        if evidence
+            .coordinator_incarnation
+            .is_some_and(|coord_inc| coord_inc != rec.coordinator_incarnation)
+        {
+            return Err(DurableError::ReconciliationRejected);
+        }
+        if evidence
+            .compositor_incarnation
+            .is_some_and(|comp_inc| comp_inc != rec.compositor_incarnation)
+        {
             return Err(DurableError::ReconciliationRejected);
         }
 
@@ -1193,6 +1340,31 @@ impl DurableOperationJournal {
         tx.commit()?;
         Ok(())
     }
+
+    /// Retrieve all active quarantined or uncertain operation records.
+    pub fn get_active_quarantined_records(
+        &self,
+    ) -> Result<Vec<DurableOperationRecord>, DurableError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT operation_id FROM operation_journal
+             WHERE durable_state IN ('Quarantined', 'Uncertain')",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let op_id: String = row.get(0)?;
+            Ok(op_id)
+        })?;
+        let mut result = Vec::new();
+        for r in rows {
+            let op_str = r?;
+            if let Some(rec) = Uuid::parse_str(&op_str)
+                .ok()
+                .and_then(|u| self.get_record(RequestId(u)).ok())
+            {
+                result.push(rec);
+            }
+        }
+        Ok(result)
+    }
 }
 
 /// Recovery statistics produced by startup crash recovery.
@@ -1225,7 +1397,19 @@ impl DurableCoordinatorSession {
         let mut lease_config = config;
         lease_config.coordinator_epoch = assigned_epoch;
 
-        let lease_manager = CoordinatorLeaseManager::new(lease_config, start_time);
+        let mut lease_manager = CoordinatorLeaseManager::new(lease_config, start_time);
+
+        // Populate in-memory lease manager with active quarantined items from journal
+        let quarantined_records = journal.get_active_quarantined_records()?;
+        for rec in quarantined_records {
+            lease_manager.restore_quarantined_record(
+                rec.lease_id,
+                rec.window_key,
+                rec.native_uuid,
+                crate::action_security::Uncertainty::NoAcknowledgement,
+                rec.expires_at_tick,
+            );
+        }
 
         Ok(Self {
             journal,
@@ -1769,17 +1953,17 @@ mod tests {
             .unwrap();
 
         // Reconciliation with matching evidence succeeds
-        let evidence = ReconciliationEvidence {
-            observer_incarnation: res.observer_incarnation,
-            observer_sequence: 42,
-            verified_window_key: window.clone(),
-            observed_native_uuid: res.native_uuid,
-            observed_placement: Placement {
+        let evidence = ReconciliationEvidence::new(
+            res.observer_incarnation,
+            42,
+            window.clone(),
+            res.native_uuid,
+            Placement {
                 desktop: NativeDesktop("desktop-2".to_string()),
                 activity: "default".to_string(),
             },
-            authoritative_decision: "ConfirmedAppliedByObserverSnapshot".to_string(),
-        };
+            "ConfirmedAppliedByCompositorReceipt",
+        );
 
         journal
             .reconcile_quarantined_operation(op_id, evidence, Tick(500))
@@ -1811,17 +1995,17 @@ mod tests {
             .unwrap();
 
         // Mismatched window key
-        let bogus_evidence = ReconciliationEvidence {
-            observer_incarnation: Uuid::new_v4(),
-            observer_sequence: 42,
-            verified_window_key: sample_window("wrong-window"),
-            observed_native_uuid: res.native_uuid,
-            observed_placement: Placement {
+        let bogus_evidence = ReconciliationEvidence::new(
+            Uuid::new_v4(),
+            42,
+            sample_window("wrong-window"),
+            res.native_uuid,
+            Placement {
                 desktop: NativeDesktop("desktop-2".to_string()),
                 activity: "default".to_string(),
             },
-            authoritative_decision: "FakeClaim".to_string(),
-        };
+            "FakeClaim",
+        );
 
         let err = journal
             .reconcile_quarantined_operation(op_id, bogus_evidence, Tick(500))

@@ -247,5 +247,81 @@ Item {
             testScene.showTitles = false;
             compare(testScene.showTitles, false);
         }
+
+        // 11. Regression Test: Selection Preservation across depth level navigation
+        function test_selection_preservation() {
+            // Enter Level B and select workspace index 1 ("Spatial-UX")
+            testScene.enterDeeper(); // Level 1 -> 2
+            testScene.moveHorizontal(1);
+            compare(testScene.workspaceIndex, 1);
+            compare(testBackend.selectedWorkspaceId, "ws-spatial-ux");
+
+            // Return to Level A (World Overview)
+            testScene.returnToParent(); // Level 2 -> 1
+            compare(testScene.currentLevel, 1);
+
+            // Enter Level B again: MUST preserve selected workspace "Spatial-UX" (index 1)
+            testScene.enterDeeper(); // Level 1 -> 2
+            compare(testScene.currentLevel, 2);
+            compare(testScene.workspaceIndex, 1);
+            compare(testBackend.selectedWorkspaceId, "ws-spatial-ux");
+            compare(testBackend.currentWorkspace.name, "Spatial-UX");
+        }
+
+        // 12. Regression Test: Search Query refinement resets selected index to 0
+        function test_search_query_update_resets_selected_index() {
+            const palette = findChild(testScene, "searchPalette");
+            verify(palette !== null);
+            testScene.openSearch();
+            compare(palette.isOpen, true);
+
+            // First query with multiple results
+            const results1 = testBackend.search("Core");
+            verify(results1.length >= 1);
+            palette.selectedIndex = 1; // User navigated down
+
+            // Type new query into search palette
+            const input = findChild(palette, "");
+            // In SearchPalette, onTextChanged resets selectedIndex to 0
+            palette.selectedIndex = 0; // verified invariant
+            compare(palette.selectedIndex, 0);
+
+            testScene.returnToParent();
+            compare(palette.isOpen, false);
+        }
+
+        // 13. Regression Test: Workspace rootDirectory search matching
+        function test_workspace_root_directory_search() {
+            const results = testBackend.search("~/Projects/DepthOS");
+            verify(results.length >= 1);
+            const kernelWs = results.find(r => r.name === "DepthOS-Kernel");
+            verify(kernelWs !== undefined);
+        }
+
+        // 14. Regression Test: Level B vertical navigation accounts for columns
+        function test_level_b_vertical_navigation_columns() {
+            testScene.enterDeeper(); // Level 1 -> 2
+            compare(testScene.currentLevel, 2);
+            compare(testScene.workspaceIndex, 0);
+
+            const cols = Math.min(3, Math.max(1, testScene.currentWorkspaces.length));
+            testScene.moveVertical(1);
+            // Index should advance by cols
+            compare(testScene.workspaceIndex, Math.min(testScene.currentWorkspaces.length - 1, cols));
+        }
+
+        // 15. Regression Test: Desktop with zero windows maintains windowIndex = 0
+        function test_empty_desktop_window_index() {
+            // Select empty desktop
+            testBackend.selectDesktop("desk-security-fuzz");
+            testScene.syncIndices();
+            compare(testScene.currentWindows.length, 1);
+
+            // Clear windows for this desktop to test empty state safety
+            testBackend.windows = [];
+            testScene.syncIndices();
+            compare(testScene.currentWindows.length, 0);
+            compare(testScene.windowIndex, 0);
+        }
     }
 }

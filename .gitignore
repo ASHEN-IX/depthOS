@@ -2,7 +2,8 @@
 *.swp
 .DS_Store
 /build/
-/artifacts/
+/artifacts/*
+!/artifacts/phase-4-1/
 __pycache__/
 
 /target/

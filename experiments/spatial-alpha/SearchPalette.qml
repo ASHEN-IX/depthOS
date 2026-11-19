@@ -98,16 +98,20 @@ FocusScope {
                         visible: !searchInput.text && !searchInput.inputMethodComposing
                     }
 
+                    onTextChanged: {
+                        searchScope.selectedIndex = 0;
+                    }
+
                     Keys.onPressed: event => {
                         if (event.key === Qt.Key_Escape) {
                             searchScope.closed();
                             event.accepted = true;
-                        } else if (event.key === Qt.Key_Down) {
+                        } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Tab) {
                             if (searchScope.searchResults.length > 0) {
                                 searchScope.selectedIndex = (searchScope.selectedIndex + 1) % searchScope.searchResults.length;
                             }
                             event.accepted = true;
-                        } else if (event.key === Qt.Key_Up) {
+                        } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Backtab) {
                             if (searchScope.searchResults.length > 0) {
                                 searchScope.selectedIndex = (searchScope.selectedIndex - 1 + searchScope.searchResults.length) % searchScope.searchResults.length;
                             }

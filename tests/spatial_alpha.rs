@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 #[test]
@@ -52,6 +53,99 @@ fn test_spatial_alpha_standalone_execution() {
     );
     let stdout = String::from_utf8_lossy(&ui_out.stdout);
     assert!(stdout.contains("Spatial viewport loaded successfully"));
+}
+
+#[test]
+fn test_spatial_alpha_database_mode() {
+    let tmp = tempfile::tempdir().expect("Failed to create tempdir");
+    let db_path = tmp.path().join("test_db_mode.sqlite");
+
+    let create_out = Command::new(env!("CARGO_BIN_EXE_depthos"))
+        .arg("--db")
+        .arg(&db_path)
+        .arg("world")
+        .arg("create")
+        .arg("Database Mode World")
+        .output()
+        .expect("Failed to create world");
+    assert!(create_out.status.success());
+
+    // Launch UI in offscreen database mode (without --mock)
+    let ui_out = Command::new(env!("CARGO_BIN_EXE_depthos"))
+        .arg("--db")
+        .arg(&db_path)
+        .arg("ui")
+        .arg("--offscreen")
+        .arg("--quit-after-ms")
+        .arg("150")
+        .output()
+        .expect("Failed to launch depthos ui");
+
+    assert!(
+        ui_out.status.success(),
+        "depthos ui failed in database mode: {}",
+        String::from_utf8_lossy(&ui_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&ui_out.stdout);
+    assert!(stdout.contains("Loaded logical hierarchy directly from database"));
+    assert!(stdout.contains("Spatial viewport loaded successfully"));
+}
+
+#[test]
+fn test_spatial_alpha_reduced_motion() {
+    let tmp = tempfile::tempdir().expect("Failed to create tempdir");
+    let db_path = tmp.path().join("test_motion.sqlite");
+
+    let create_out = Command::new(env!("CARGO_BIN_EXE_depthos"))
+        .arg("--db")
+        .arg(&db_path)
+        .arg("world")
+        .arg("create")
+        .arg("Motion World")
+        .output()
+        .expect("Failed to create world");
+    assert!(create_out.status.success());
+
+    let ui_out = Command::new(env!("CARGO_BIN_EXE_depthos"))
+        .arg("--db")
+        .arg(&db_path)
+        .arg("ui")
+        .arg("--mock")
+        .arg("--reduced-motion")
+        .arg("--offscreen")
+        .arg("--quit-after-ms")
+        .arg("150")
+        .output()
+        .expect("Failed to launch depthos ui with reduced motion");
+
+    assert!(ui_out.status.success());
+    let stdout = String::from_utf8_lossy(&ui_out.stdout);
+    assert!(stdout.contains("Spatial viewport loaded successfully"));
+}
+
+#[test]
+fn test_visual_artifacts_presence_and_integrity() {
+    let artifacts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("artifacts/phase-4-1");
+    let required = [
+        "level-a-world-overview.png",
+        "level-b-workspace-overview.png",
+        "level-c-desktop-overview.png",
+        "level-c-titles-revealed.png",
+        "search-palette-modal.png",
+        "status-badges-gallery.png",
+        "reduced-motion-view.png",
+    ];
+
+    for file_name in required {
+        let p = artifacts_dir.join(file_name);
+        assert!(p.exists(), "Missing required visual artifact: {:?}", p);
+        let meta = std::fs::metadata(&p).expect("Failed to read metadata");
+        assert!(
+            meta.len() > 1024,
+            "Artifact file is suspiciously small: {:?}",
+            p
+        );
+    }
 }
 
 #[test]

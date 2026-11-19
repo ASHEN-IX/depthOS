@@ -12,13 +12,200 @@ Safe development launch commands:
     depthos ui
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 QML_FILE = ROOT / "experiments/spatial-alpha/main.qml"
+
+
+def load_from_db_path(db_path, backend):
+    exe = ROOT / "target/debug/depthos"
+    if not exe.exists():
+        exe = ROOT / "target/release/depthos"
+    if not exe.exists():
+        return False
+    try:
+        proc = subprocess.run([str(exe), "--db", str(db_path), "tree"], capture_output=True, text=True, check=True)
+        data = json.loads(proc.stdout)
+        worlds = []
+        workspaces = []
+        desktops = []
+        for w in data.get("worlds", []):
+            world_info = w.get("world", {})
+            w_id = world_info.get("id")
+            worlds.append({
+                "id": w_id,
+                "name": world_info.get("name", "World"),
+                "description": world_info.get("description") or "Logical Domain",
+                "icon": "🌐",
+                "color": "#6366F1",
+                "accent": "#818CF8"
+            })
+            for ws in w.get("workspaces", []):
+                ws_info = ws.get("workspace", {})
+                ws_id = ws_info.get("id")
+                workspaces.append({
+                    "id": ws_id,
+                    "worldId": w_id,
+                    "name": ws_info.get("name", "Workspace"),
+                    "description": ws_info.get("description") or "Logical Workspace",
+                    "rootDirectory": ws_info.get("root_directory") or "~",
+                    "gitBranch": "main"
+                })
+                for d in ws.get("desktops", []):
+                    desktops.append({
+                        "id": d.get("id"),
+                        "workspaceId": ws_id,
+                        "name": d.get("name", "Desktop"),
+                        "role": d.get("role") or "Logical Desktop"
+                    })
+        backend.setProperty("worlds", worlds)
+        backend.setProperty("workspaces", workspaces)
+        backend.setProperty("desktops", desktops)
+        backend.setProperty("windows", [])
+        backend.setProperty("state", "Database Mode")
+        backend.setProperty("health", "Synchronized")
+        backend.setProperty("observationHealth", "Unavailable")
+        backend.setProperty("mockMode", False)
+        if worlds:
+            backend.setProperty("selectedWorldId", worlds[0]["id"])
+            sub_ws = [ws for ws in workspaces if ws["worldId"] == worlds[0]["id"]]
+            if sub_ws:
+                backend.setProperty("selectedWorkspaceId", sub_ws[0]["id"])
+                sub_d = [d for d in desktops if d["workspaceId"] == sub_ws[0]["id"]]
+                if sub_d:
+                    backend.setProperty("selectedDesktopId", sub_d[0]["id"])
+        return True
+    except Exception as e:
+        sys.stderr.write(f"depthos-spatial-alpha: Failed to load from database {db_path}: {e}\n")
+        return False
+
+
+def load_from_dbus(endpoint, backend):
+    try:
+        import dbus
+        health_raw = json.loads(str(endpoint.GetControllerHealth()))
+        health_data = health_raw.get("data", {}).get("health", {})
+        lifecycle = health_data.get("lifecycle", "Unknown")
+        obs_health = health_data.get("observation", "Unknown")
+
+        # Fetch hierarchy pages
+        cursor = 0
+        rev = ""
+        items = []
+        while True:
+            page = json.loads(str(endpoint.GetHierarchy(dbus.UInt32(cursor), rev)))
+            p_data = page.get("data", {})
+            items.extend(p_data.get("items", []))
+            rev = page.get("revision", "")
+            cursor = p_data.get("nextCursor")
+            if cursor is None:
+                break
+
+        worlds = []
+        workspaces = []
+        desktops = []
+        for item in items:
+            k = item.get("kind")
+            if k == "world":
+                worlds.append({
+                    "id": item["id"],
+                    "name": item["name"],
+                    "description": "Logical World Domain",
+                    "icon": "🌐",
+                    "color": "#6366F1",
+                    "accent": "#818CF8"
+                })
+            elif k == "workspace":
+                workspaces.append({
+                    "id": item["id"],
+                    "worldId": item["parentId"],
+                    "name": item["name"],
+                    "description": "Logical Workspace",
+                    "rootDirectory": "~",
+                    "gitBranch": "main"
+                })
+            elif k == "desktop":
+                desktops.append({
+                    "id": item["id"],
+                    "workspaceId": item["parentId"],
+                    "name": item["name"],
+                    "role": "Logical Desktop"
+                })
+
+        # Fetch context report
+        cursor = 0
+        rev = ""
+        context_items = []
+        while True:
+            page = json.loads(str(endpoint.GetContextReport(dbus.UInt32(cursor), rev)))
+            p_data = page.get("data", {})
+            context_items.extend(p_data.get("items", []))
+            rev = page.get("revision", "")
+            cursor = p_data.get("nextCursor")
+            if cursor is None:
+                break
+
+        if obs_health == "Synchronized":
+            badge_default = "Live"
+        elif obs_health == "Desynchronized":
+            badge_default = "Stale"
+        elif lifecycle == "WaitingForObserver":
+            badge_default = "Reconnecting"
+        else:
+            badge_default = "Unavailable"
+
+        windows = []
+        for item in context_items:
+            win = item.get("window", {})
+            app_id = win.get("runtimeId", "window")
+            targets = item.get("targets", [])
+            desktop_id = targets[0] if targets else ""
+            status = item.get("status", "Unknown")
+            reason = item.get("reason", "")
+            badge = badge_default if status == "Assigned" else "Unknown"
+
+            windows.append({
+                "id": win.get("runtimeId", str(uuid.uuid4())),
+                "desktopId": desktop_id,
+                "nativeId": item.get("nativeId") or "",
+                "appId": app_id,
+                "appName": app_id.split(".")[-1].capitalize(),
+                "title": win.get("title", app_id),
+                "minimized": False,
+                "fullscreen": False,
+                "focused": False,
+                "statusBadge": badge,
+                "statusReason": reason or "Live observation"
+            })
+
+        backend.setProperty("worlds", worlds)
+        backend.setProperty("workspaces", workspaces)
+        backend.setProperty("desktops", desktops)
+        backend.setProperty("windows", windows)
+        backend.setProperty("state", "Connected" if obs_health == "Synchronized" else "Degraded")
+        backend.setProperty("health", lifecycle)
+        backend.setProperty("observationHealth", badge_default)
+        backend.setProperty("mockMode", False)
+
+        if worlds:
+            backend.setProperty("selectedWorldId", worlds[0]["id"])
+            sub_ws = [ws for ws in workspaces if ws["worldId"] == worlds[0]["id"]]
+            if sub_ws:
+                backend.setProperty("selectedWorkspaceId", sub_ws[0]["id"])
+                sub_d = [d for d in desktops if d["workspaceId"] == sub_ws[0]["id"]]
+                if sub_d:
+                    backend.setProperty("selectedDesktopId", sub_d[0]["id"])
+        return True
+    except Exception as e:
+        sys.stderr.write(f"depthos-spatial-alpha: D-Bus update error: {e}\n")
+        return False
 
 
 def main():
@@ -62,9 +249,10 @@ def main():
 
     # Import PyQt6
     try:
-        from PyQt6.QtCore import QUrl, QTimer
+        from PyQt6.QtCore import QUrl, QTimer, QObject, pyqtSlot
         from PyQt6.QtGui import QGuiApplication
         from PyQt6.QtQml import QQmlApplicationEngine
+        from PyQt6.QtDBus import QDBusConnection
     except ImportError as e:
         sys.stderr.write(f"depthos-spatial-alpha: PyQt6 is required but could not be imported: {e}\n")
         sys.exit(1)
@@ -82,27 +270,6 @@ def main():
 
     engine = QQmlApplicationEngine()
 
-    # Verify D-Bus connection or determine mode
-    is_mock = args.mock
-    if not is_mock:
-        try:
-            from PyQt6.QtDBus import QDBusConnection, QDBusInterface
-            bus = QDBusConnection.sessionBus()
-            if not bus.isConnected():
-                is_mock = True
-            else:
-                iface = QDBusInterface("org.depthos.Controller", "/org/depthos/Controller", "org.depthos.Controller1", bus)
-                if not iface.isValid():
-                    # Controller not currently running, default to standalone demo mode
-                    is_mock = True
-        except Exception:
-            is_mock = True
-
-    if is_mock:
-        print("[depthos-spatial-alpha] Running in Standalone Demo/Mock Mode (Controller offline or --mock flag set).")
-    else:
-        print("[depthos-spatial-alpha] Connected to org.depthos.Controller on session bus.")
-
     if not QML_FILE.exists():
         sys.stderr.write(f"depthos-spatial-alpha: QML file not found: {QML_FILE}\n")
         sys.exit(1)
@@ -114,8 +281,65 @@ def main():
         sys.exit(1)
 
     root = engine.rootObjects()[0]
+    backend = root.property("backend")
+    scene = root.property("scene")
+
     if args.reduced_motion:
         root.setProperty("reducedMotion", True)
+
+    # Determine data source mode
+    is_mock = args.mock
+    loaded_live = False
+    endpoint = None
+
+    if not is_mock and args.db:
+        if load_from_db_path(args.db, backend):
+            loaded_live = True
+            print(f"[depthos-spatial-alpha] Loaded logical hierarchy directly from database: {args.db}")
+
+    if not is_mock and not loaded_live:
+        try:
+            import dbus
+            sbus = dbus.SessionBus()
+            if sbus.name_has_owner("org.depthos.Controller"):
+                endpoint = dbus.Interface(
+                    sbus.get_object("org.depthos.Controller", "/org/depthos/Controller"),
+                    "org.depthos.Controller1"
+                )
+                if load_from_dbus(endpoint, backend):
+                    loaded_live = True
+                    print("[depthos-spatial-alpha] Connected to org.depthos.Controller on session bus.")
+
+                    # Wire up QtDBus invalidation signal
+                    class SignalReceiver(QObject):
+                        def __init__(self, ep, be):
+                            super().__init__()
+                            self.ep = ep
+                            self.be = be
+
+                        @pyqtSlot(str, int)
+                        def on_invalidated(self, instance, scopes):
+                            load_from_dbus(self.ep, self.be)
+
+                    receiver = SignalReceiver(endpoint, backend)
+                    qbus = QDBusConnection.sessionBus()
+                    qbus.connect(
+                        "org.depthos.Controller",
+                        "/org/depthos/Controller",
+                        "org.depthos.Controller1",
+                        "invalidated",
+                        receiver.on_invalidated
+                    )
+                    # Keep receiver alive
+                    engine.receiver_ref = receiver
+        except Exception as e:
+            loaded_live = False
+
+    if not loaded_live:
+        print("[depthos-spatial-alpha] Running in Standalone Demo/Mock Mode (Controller offline or --mock flag set).")
+
+    if scene:
+        scene.syncIndices()
 
     if args.quit_after_ms > 0:
         QTimer.singleShot(args.quit_after_ms, app.quit)

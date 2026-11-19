@@ -120,7 +120,7 @@ Item {
             const ws = workspaces[i];
             const parentWorld = worlds.find(w => w.id === ws.worldId);
             const parentName = parentWorld ? parentWorld.name : "World";
-            if (ws.name.toLowerCase().includes(q) || (ws.description && ws.description.toLowerCase().includes(q)) || parentName.toLowerCase().includes(q)) {
+            if (ws.name.toLowerCase().includes(q) || (ws.description && ws.description.toLowerCase().includes(q)) || (ws.rootDirectory && ws.rootDirectory.toLowerCase().includes(q)) || parentName.toLowerCase().includes(q)) {
                 results.push({
                     kind: "workspace",
                     id: ws.id,
@@ -182,6 +182,10 @@ Item {
         state = "Demo Mode";
         health = "Synchronized";
         observationHealth = "Live";
+        selectedWorldId = "";
+        selectedWorkspaceId = "";
+        selectedDesktopId = "";
+        selectedWindowId = "";
 
         if (worlds.length > 0) {
             selectWorld(worlds[0].id);

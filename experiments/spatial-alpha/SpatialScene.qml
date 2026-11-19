@@ -91,15 +91,23 @@ FocusScope {
             return;
         if (scene.backend.worlds && scene.backend.worlds.length > 0) {
             scene.worldIndex = Math.max(0, scene.backend.worlds.findIndex(w => w.id === scene.backend.selectedWorldId));
+        } else {
+            scene.worldIndex = 0;
         }
         if (scene.currentWorkspaces.length > 0) {
             scene.workspaceIndex = Math.max(0, scene.currentWorkspaces.findIndex(ws => ws.id === scene.backend.selectedWorkspaceId));
+        } else {
+            scene.workspaceIndex = 0;
         }
         if (scene.currentDesktops.length > 0) {
             scene.desktopIndex = Math.max(0, scene.currentDesktops.findIndex(d => d.id === scene.backend.selectedDesktopId));
+        } else {
+            scene.desktopIndex = 0;
         }
         if (scene.currentWindows.length > 0) {
             scene.windowIndex = Math.max(0, scene.currentWindows.findIndex(w => w.id === scene.backend.selectedWindowId));
+        } else {
+            scene.windowIndex = 0;
         }
     }
 
@@ -152,7 +160,8 @@ FocusScope {
         if (scene.currentLevel === 1) {
             scene.moveHorizontal(delta * 2);
         } else if (scene.currentLevel === 2) {
-            scene.moveHorizontal(delta * 2);
+            const cols = Math.min(3, Math.max(1, scene.currentWorkspaces.length));
+            scene.moveHorizontal(delta * cols);
         } else if (scene.currentLevel === 3) {
             // In Level C, vertical moves between logical desktops
             if (scene.currentDesktops.length > 0) {
@@ -167,18 +176,32 @@ FocusScope {
             return;
 
         if (scene.currentLevel === 1) {
-            // World -> Workspace Overview
+            // World -> Workspace Overview (preserve selection if already in world)
+            scene.currentLevel = 2;
             if (scene.currentWorkspaces.length > 0) {
-                scene.currentLevel = 2;
+                const existingIdx = scene.currentWorkspaces.findIndex(ws => ws.id === scene.backend.selectedWorkspaceId);
+                if (existingIdx >= 0) {
+                    scene.workspaceIndex = existingIdx;
+                } else {
+                    scene.workspaceIndex = 0;
+                    scene.backend.selectWorkspace(scene.currentWorkspaces[0].id);
+                }
+            } else {
                 scene.workspaceIndex = 0;
-                scene.backend.selectWorkspace(scene.currentWorkspaces[0].id);
             }
+            scene.syncIndices();
         } else if (scene.currentLevel === 2) {
-            // Workspace -> Logical Desktop Overview
+            // Workspace -> Logical Desktop Overview (preserve selection if already in workspace)
             if (scene.currentDesktops.length > 0) {
                 scene.currentLevel = 3;
-                scene.desktopIndex = 0;
-                scene.backend.selectDesktop(scene.currentDesktops[0].id);
+                const existingIdx = scene.currentDesktops.findIndex(d => d.id === scene.backend.selectedDesktopId);
+                if (existingIdx >= 0) {
+                    scene.desktopIndex = existingIdx;
+                } else {
+                    scene.desktopIndex = 0;
+                    scene.backend.selectDesktop(scene.currentDesktops[0].id);
+                }
+                scene.syncIndices();
             }
         } else if (scene.currentLevel === 3) {
             // Desktop -> Window Focus cycle
@@ -198,8 +221,10 @@ FocusScope {
 
         if (scene.currentLevel === 3) {
             scene.currentLevel = 2; // Desktop -> Workspace
+            scene.syncIndices();
         } else if (scene.currentLevel === 2) {
             scene.currentLevel = 1; // Workspace -> World
+            scene.syncIndices();
         } else if (scene.currentLevel === 1) {
             scene.closed();
         }

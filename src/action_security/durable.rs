@@ -278,7 +278,7 @@ impl DurableOperationJournal {
     fn init_with_connection(conn: Connection) -> Result<Self, DurableError> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
+             PRAGMA synchronous = FULL;
              PRAGMA foreign_keys = ON;
              PRAGMA busy_timeout = 5000;",
         )?;
@@ -321,6 +321,7 @@ impl DurableOperationJournal {
             );
 
             CREATE INDEX IF NOT EXISTS idx_journal_window ON operation_journal(window_key);
+            CREATE INDEX IF NOT EXISTS idx_journal_native ON operation_journal(native_uuid);
             CREATE INDEX IF NOT EXISTS idx_journal_state ON operation_journal(durable_state);
             CREATE INDEX IF NOT EXISTS idx_journal_lease ON operation_journal(lease_id);",
         )?;
@@ -329,6 +330,10 @@ impl DurableOperationJournal {
             conn,
             active_crash_point: CrashPoint::None,
         })
+    }
+
+    pub fn connection(&self) -> &Connection {
+        &self.conn
     }
 
     pub fn set_crash_point(&mut self, cp: CrashPoint) {
@@ -441,6 +446,43 @@ impl DurableOperationJournal {
         Ok(())
     }
 
+    /// Check whether a resource (by window key and native UUID) is available for coordinator operations.
+    /// Fails closed if the resource is locked by an active lease or quarantined.
+    pub fn check_resource_available(
+        &self,
+        window: &WindowKey,
+        native_uuid: Uuid,
+    ) -> Result<(), DurableError> {
+        let window_json = serde_json::to_string(window)
+            .map_err(|e| DurableError::Database(format!("JSON serialization error: {e}")))?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT operation_id, durable_state FROM operation_journal
+             WHERE (window_key = ?1 OR native_uuid = ?2) AND durable_state NOT IN ('Completed', 'Aborted', 'Reconciled')
+             LIMIT 1",
+        )?;
+
+        let res = stmt
+            .query_row(params![window_json, native_uuid.to_string()], |row| {
+                let op_id: String = row.get(0)?;
+                let state_str: String = row.get(1)?;
+                Ok((op_id, state_str))
+            })
+            .optional()?;
+
+        if let Some((_, state_str)) = res {
+            let state = DurableOperationState::parse_str(&state_str)
+                .unwrap_or(DurableOperationState::Quarantined);
+            if state.is_quarantined_or_uncertain() {
+                return Err(DurableError::WindowQuarantined);
+            } else {
+                return Err(DurableError::WindowLocked);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Linearization Point 1: Reservation Acquisition.
     /// Inserts a durable reservation in SQLite, verifying replay immunity and window exclusion.
     pub fn acquire_reservation(
@@ -474,9 +516,9 @@ impl DurableOperationJournal {
         let active_state: Option<String> = tx
             .query_row(
                 "SELECT durable_state FROM operation_journal
-                 WHERE window_key = ?1 AND durable_state NOT IN ('Completed', 'Aborted', 'Reconciled')
+                 WHERE (window_key = ?1 OR native_uuid = ?2) AND durable_state NOT IN ('Completed', 'Aborted', 'Reconciled')
                  LIMIT 1",
-                params![window_json],
+                params![window_json, res.native_uuid.to_string()],
                 |row| row.get(0),
             )
             .optional()?;
@@ -787,6 +829,12 @@ impl DurableOperationJournal {
         {
             return Err(DurableError::ReconciliationRejected);
         }
+        if evidence.observer_incarnation != rec.observer_incarnation {
+            return Err(DurableError::ReconciliationRejected);
+        }
+        if evidence.observer_sequence <= rec.observer_version_seq {
+            return Err(DurableError::ReconciliationRejected);
+        }
         if evidence.authoritative_decision.trim().is_empty() {
             return Err(DurableError::ReconciliationRejected);
         }
@@ -874,7 +922,7 @@ impl DurableOperationJournal {
         {
             let mut stmt = tx.prepare(
                 "SELECT operation_id, dispatch_intent, durable_state FROM operation_journal
-                 WHERE durable_state NOT IN ('Completed', 'Aborted', 'Reconciled')",
+                 WHERE durable_state NOT IN ('Completed', 'Aborted', 'Reconciled', 'Quarantined')",
             )?;
 
             let rows = stmt.query_map([], |row| {
@@ -1661,7 +1709,7 @@ mod tests {
 
         // Reconciliation with matching evidence succeeds
         let evidence = ReconciliationEvidence {
-            observer_incarnation: Uuid::new_v4(),
+            observer_incarnation: res.observer_incarnation,
             observer_sequence: 42,
             verified_window_key: window.clone(),
             observed_native_uuid: res.native_uuid,

@@ -164,7 +164,7 @@ fn test_lost_acknowledgment_triggers_quarantine_and_denies_redispatch() {
     let comp_inc = Uuid::new_v4();
     let config = make_lease_config(coord_inc, comp_inc);
 
-    let mut session = DurableCoordinatorSession::new(journal, config, Tick(100)).unwrap();
+    let mut session = DurableCoordinatorSession::new(journal, config.clone(), Tick(100)).unwrap();
     let window = make_window("win-lost-ack");
     let op_id = RequestId(Uuid::new_v4());
 
@@ -293,7 +293,7 @@ fn test_authoritative_reconciliation_workflow() {
     let comp_inc = Uuid::new_v4();
     let config = make_lease_config(coord_inc, comp_inc);
 
-    let mut session = DurableCoordinatorSession::new(journal, config, Tick(100)).unwrap();
+    let mut session = DurableCoordinatorSession::new(journal, config.clone(), Tick(100)).unwrap();
     let window = make_window("win-reconcile");
     let op_id = RequestId(Uuid::new_v4());
 
@@ -337,7 +337,7 @@ fn test_authoritative_reconciliation_workflow() {
     // Valid authoritative evidence -> Reconciled
     let native_uuid = session.journal().get_record(op_id).unwrap().native_uuid;
     let valid = ReconciliationEvidence {
-        observer_incarnation: Uuid::new_v4(),
+        observer_incarnation: config.observer_incarnation,
         observer_sequence: 12,
         verified_window_key: window.clone(),
         observed_native_uuid: native_uuid,

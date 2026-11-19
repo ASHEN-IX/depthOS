@@ -225,7 +225,9 @@ pub struct CoordinatorLeaseManager {
 
     active_reservations: BTreeMap<LeaseId, LeaseReservation>,
     locked_windows: BTreeMap<WindowKey, LeaseId>,
+    locked_native_uuids: BTreeMap<Uuid, LeaseId>,
     quarantined_windows: BTreeMap<WindowKey, (LeaseId, Uncertainty, Tick)>,
+    quarantined_native_uuids: BTreeMap<Uuid, WindowKey>,
     history: BTreeMap<LeaseId, LeaseState>,
     consumed_operations: BTreeSet<RequestId>,
     current_time: Tick,
@@ -245,7 +247,9 @@ impl CoordinatorLeaseManager {
             compositor_incarnation: config.compositor_incarnation,
             active_reservations: BTreeMap::new(),
             locked_windows: BTreeMap::new(),
+            locked_native_uuids: BTreeMap::new(),
             quarantined_windows: BTreeMap::new(),
+            quarantined_native_uuids: BTreeMap::new(),
             history: BTreeMap::new(),
             consumed_operations: BTreeSet::new(),
             current_time: start_time,
@@ -267,13 +271,14 @@ impl CoordinatorLeaseManager {
         let mut expired = Vec::new();
         for (id, res) in &self.active_reservations {
             if now >= res.expires_at {
-                expired.push((*id, res.window.clone()));
+                expired.push((*id, res.window.clone(), res.native_uuid));
             }
         }
 
-        for (id, window) in expired {
+        for (id, window, native_uuid) in expired {
             self.active_reservations.remove(&id);
             self.locked_windows.remove(&window);
+            self.locked_native_uuids.remove(&native_uuid);
             self.history.insert(
                 id,
                 LeaseState::Expired {
@@ -294,6 +299,22 @@ impl CoordinatorLeaseManager {
             return Err(LeaseError::Conflict);
         }
         if self.quarantined_windows.contains_key(window) {
+            return Err(LeaseError::Quarantined);
+        }
+        Ok(())
+    }
+
+    /// Check whether a resource (window key AND native UUID) can undergo coordinator mutation.
+    pub fn check_resource_available(
+        &self,
+        window: &WindowKey,
+        native_uuid: Uuid,
+    ) -> Result<(), LeaseError> {
+        self.check_window_available(window)?;
+        if self.locked_native_uuids.contains_key(&native_uuid) {
+            return Err(LeaseError::Conflict);
+        }
+        if self.quarantined_native_uuids.contains_key(&native_uuid) {
             return Err(LeaseError::Quarantined);
         }
         Ok(())
@@ -321,7 +342,7 @@ impl CoordinatorLeaseManager {
         if self.coordinator_incarnation.is_nil() || self.observer_incarnation.is_nil() {
             return Err(LeaseError::InvalidPrecondition);
         }
-        self.check_window_available(&req.window)?;
+        self.check_resource_available(&req.window, req.native_uuid)?;
 
         let expires_at = Tick(
             now.0
@@ -350,6 +371,7 @@ impl CoordinatorLeaseManager {
         };
 
         self.locked_windows.insert(req.window, id);
+        self.locked_native_uuids.insert(req.native_uuid, id);
         self.active_reservations.insert(id, reservation.clone());
         self.history
             .insert(id, LeaseState::Active(Box::new(reservation)));
@@ -368,6 +390,7 @@ impl CoordinatorLeaseManager {
             .remove(&id)
             .ok_or(LeaseError::NotFound)?;
         self.locked_windows.remove(&res.window);
+        self.locked_native_uuids.remove(&res.native_uuid);
 
         self.history.insert(
             id,
@@ -400,6 +423,7 @@ impl CoordinatorLeaseManager {
             .remove(&id)
             .ok_or(LeaseError::NotFound)?;
         self.locked_windows.remove(&reservation.window);
+        self.locked_native_uuids.remove(&reservation.native_uuid);
 
         // Verify version alignment before dispatch
         if reservation.compositor_incarnation != self.compositor_incarnation {
@@ -444,9 +468,11 @@ impl CoordinatorLeaseManager {
                 Ok(outcome)
             }
             Err(uncertainty) => {
-                // Quarantine window to prevent conflicting state changes
+                // Quarantine window and native UUID to prevent conflicting state changes
                 self.quarantined_windows
                     .insert(reservation.window.clone(), (id, uncertainty, now));
+                self.quarantined_native_uuids
+                    .insert(reservation.native_uuid, reservation.window.clone());
                 self.history.insert(
                     id,
                     LeaseState::Quarantined {
@@ -473,6 +499,7 @@ impl CoordinatorLeaseManager {
         let active = std::mem::take(&mut self.active_reservations);
         for (id, res) in active {
             self.locked_windows.remove(&res.window);
+            self.locked_native_uuids.remove(&res.native_uuid);
             self.history.insert(
                 id,
                 LeaseState::Revoked {
@@ -493,6 +520,7 @@ impl CoordinatorLeaseManager {
         let active = std::mem::take(&mut self.active_reservations);
         for (id, res) in active {
             self.locked_windows.remove(&res.window);
+            self.locked_native_uuids.remove(&res.native_uuid);
             self.history.insert(
                 id,
                 LeaseState::Revoked {
@@ -506,7 +534,19 @@ impl CoordinatorLeaseManager {
 
     /// Reconcile quarantine for a window using fresh authoritative evidence.
     pub fn reconcile_quarantined_window(&mut self, window: &WindowKey) -> bool {
-        self.quarantined_windows.remove(window).is_some()
+        let win_removed = self.quarantined_windows.remove(window).is_some();
+        self.quarantined_native_uuids.retain(|_, win| win != window);
+        win_removed
+    }
+
+    pub fn reconcile_quarantined_resource(
+        &mut self,
+        window: &WindowKey,
+        native_uuid: Uuid,
+    ) -> bool {
+        let win_removed = self.quarantined_windows.remove(window).is_some();
+        let uuid_removed = self.quarantined_native_uuids.remove(&native_uuid).is_some();
+        win_removed || uuid_removed
     }
 
     pub fn get_reservation_state(&self, id: &LeaseId) -> Option<&LeaseState> {
@@ -515,6 +555,10 @@ impl CoordinatorLeaseManager {
 
     pub fn is_window_quarantined(&self, window: &WindowKey) -> bool {
         self.quarantined_windows.contains_key(window)
+    }
+
+    pub fn is_native_quarantined(&self, native_uuid: &Uuid) -> bool {
+        self.quarantined_native_uuids.contains_key(native_uuid)
     }
 
     pub fn is_window_locked(&self, window: &WindowKey) -> bool {

@@ -69,9 +69,24 @@ def main():
         "cargo", "test", "--test", "adversarial_lease", "--locked", "--offline"
     ])
 
+    # Step 5: Adversarial SQLite Durability, Concurrency & Corruption
+    run_step("Execute SQLite Durability & Concurrency Adversarial Tests", [
+        sys.executable, str(ROOT / "tests/adversarial/test_sqlite_durability_adversarial.py")
+    ])
+
+    # Step 6: Security Contract Claim Adversarial Audit
+    run_step("Execute Security Contract Claim Adversarial Audit", [
+        sys.executable, str(ROOT / "tests/adversarial/test_contract_claims_adversarial.py")
+    ])
+
+    # Step 7: Rust Durable Coordinator Protocol Adversarial Suite
+    run_step("Execute Durable Coordinator Protocol Adversarial Suite (Rust)", [
+        "cargo", "test", "--test", "adversarial_durable_coordinator", "--locked", "--offline"
+    ])
+
     total_duration = time.monotonic() - start_total
     print("\n=======================================================")
-    print(f"=== ALL PHASE 3.8 ADVERSARIAL SUITES PASSED ({total_duration:.2f}s) ===")
+    print(f"=== ALL PHASE 3.8 / 3.9 ADVERSARIAL SUITES PASSED ({total_duration:.2f}s) ===")
     print("=======================================================")
 
 

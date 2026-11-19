@@ -55,7 +55,7 @@ flowchart TD
 
 ### SQLite Schema Definition
 
-The database executes under WAL mode with `PRAGMA synchronous = NORMAL`, `PRAGMA foreign_keys = ON`, and `PRAGMA busy_timeout = 5000`.
+The database executes under WAL mode with `PRAGMA synchronous = FULL`, `PRAGMA foreign_keys = ON`, and `PRAGMA busy_timeout = 5000`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS coordinator_incarnations (
@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS operation_journal (
 );
 
 CREATE INDEX IF NOT EXISTS idx_journal_window ON operation_journal(window_key);
+CREATE INDEX IF NOT EXISTS idx_journal_native ON operation_journal(native_uuid);
 CREATE INDEX IF NOT EXISTS idx_journal_state ON operation_journal(durable_state);
 CREATE INDEX IF NOT EXISTS idx_journal_lease ON operation_journal(lease_id);
 ```
@@ -226,13 +227,15 @@ To eliminate race conditions and enforce deterministic concurrency, the protocol
 - **Transaction**: `BEGIN IMMEDIATE` updating `durable_state = 'Reconciled'` with serialized `reconciliation_evidence`.
 - **Preconditions**:
   * Evidence matches target `window_key` and observed `native_uuid`.
+  * Observer incarnation matches the recorded reservation's `observer_incarnation`.
+  * Observer sequence is strictly fresh (`observer_sequence > rec.observer_version_seq`).
   * Authoritative decision string is non-empty.
 - **Postconditions**: Operation reaches terminal `Reconciled` state.
 
 ### LP-8: Final Release of Exclusion
-- **Action**: Target window becomes available for subsequent coordinator operations.
-- **Preconditions**: All operations for the target window have reached a terminal state (`Completed`, `Aborted`, or `Reconciled`).
-- **Postconditions**: `check_window_available(&window)` returns `Ok(())`.
+- **Action**: Target window and native UUID become available for subsequent coordinator operations.
+- **Preconditions**: All operations for the target resource have reached a terminal state (`Completed`, `Aborted`, or `Reconciled`).
+- **Postconditions**: `check_resource_available(&window, native_uuid)` returns `Ok(())`. Both `window_key` and `native_uuid` exclusions are cleared in both durable storage and in-memory lease tracking.
 
 ---
 

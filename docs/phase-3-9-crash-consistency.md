@@ -57,13 +57,13 @@ flowchart TD
 ### Formal Qualification on Class E (Power-Loss Safety)
 > **FORMAL SPECIFICATION NOTICE**:  
 > In compliance with the DepthOS security contract, **Class E Power-Loss Safety is formally classified as UNSUPPORTED**.  
-> Virtual machines, containerized test runners, and standard developer workstations cannot physically test or guarantee bare-metal SSD/NVMe drive controller flush behavior, barrier enforcement, or volatile controller cache battery backup (PLP). While SQLite WAL mode with `PRAGMA synchronous = NORMAL` provides standard operating-system-level crash consistency, DepthOS explicitly disclaims hardware power-cut safety without bare-metal hardware validation.
+> Virtual machines, containerized test runners, and standard developer workstations cannot physically test or guarantee bare-metal SSD/NVMe drive controller flush behavior, barrier enforcement, or volatile controller cache battery backup (PLP). While SQLite WAL mode with `PRAGMA synchronous = FULL` provides rigorous process and operating-system crash consistency, DepthOS explicitly disclaims hardware power-cut safety without bare-metal hardware validation.
 
 ---
 
 ## 2. Crash-Cut Injection Matrix (Section 3.E)
 
-The protocol defines eight discrete crash points in `src/action_security/durable.rs`:
+The protocol defines eleven variants in `CrashPoint` (`None` plus ten active fault injection points) in `src/action_security/durable.rs`:
 
 ```rust
 pub enum CrashPoint {
@@ -216,13 +216,15 @@ pub struct ReconciliationEvidence {
 ### Verification Criteria
 1. `verified_window_key`: Must match the quarantined operation's `window_key` exactly.
 2. `observed_native_uuid`: Must match the quarantined operation's `native_uuid`.
-3. `authoritative_decision`: Must contain an explicit, non-whitespace audit justification (e.g. `"ConfirmedAppliedByObserverSnapshot"`).
-4. If any criterion fails, `reconcile_quarantine()` returns `DurableError::ReconciliationRejected` and the window remains locked.
-5. On successful verification:
+3. `observer_incarnation`: Must match the quarantined operation's `observer_incarnation`.
+4. `observer_sequence`: Must be strictly fresh (`observer_sequence > rec.observer_version_seq`).
+5. `authoritative_decision`: Must contain an explicit, non-whitespace audit justification (e.g. `"ConfirmedAppliedByObserverSnapshot"`).
+6. If any criterion fails, `reconcile_quarantine()` returns `DurableError::ReconciliationRejected` and the window and native UUID remain quarantined.
+7. On successful verification:
    - `durable_state` transitions to `Reconciled`.
    - Serialized evidence is permanently recorded in `reconciliation_evidence`.
    - `recovery_status` is updated to `'AuthoritativelyReconciled'`.
-   - Target window exclusion is finally released (LP-8).
+   - Both target window and native UUID exclusions are released (LP-8).
 
 ---
 
@@ -232,11 +234,12 @@ All crash, recovery, and acknowledgment invariants are verified by automated det
 
 | Test File | Test Name | Invariants Verified | Result |
 |---|---|---|:---:|
-| `tests/durable_coordinator.rs` | `test_crash_points_matrix_consistency` | Pre-intent aborts, post-intent quarantines, 8 crash points. | **PASS** |
+| `tests/durable_coordinator.rs` | `test_crash_points_matrix_consistency` | Pre-intent aborts, post-intent quarantines, crash matrix. | **PASS** |
 | `tests/durable_coordinator.rs` | `test_lost_acknowledgment_triggers_quarantine_and_denies_redispatch` | Lost ack, quarantine window lock, replay denial. | **PASS** |
 | `tests/durable_coordinator.rs` | `test_duplicate_and_delayed_ack_handling` | Terminal absorbing, duplicate ack rejection, stale incarnation. | **PASS** |
 | `tests/durable_coordinator.rs` | `test_authoritative_reconciliation_workflow` | Bogus evidence rejection, valid evidence reconciliation, window unlock. | **PASS** |
 | `tests/durable_coordinator.rs` | `test_monotonic_incarnation_epochs_across_restarts` | Strict monotonic epoch allocation across 5 restarts. | **PASS** |
+| `tests/adversarial_durable_coordinator.rs` | 11 Adversarial & Regression Tests | Sequence freshness, incarnation fencing, native UUID bypass, pragma verification, idempotency. | **PASS** |
 | `src/action_security/durable.rs` | 13 Unit Tests in `mod tests` | State machine legal transitions, absorbing states, intent precedes dispatch. | **PASS** |
 
 **Zero sleep statements or timing heuristics** are used; all tests execute deterministically against SQLite in-memory and isolated temporary databases.

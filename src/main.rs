@@ -9,7 +9,10 @@ use depthos_core::{
     application::Application,
     domain::{DesktopId, Error, Result, WorkspaceId, WorldId},
     observed::ObservedStateSource,
-    sqlite::{SqliteStore, default_path},
+    sqlite::{
+        SqliteStore, default_path,
+        init::{InitOptions, initialize, initialize_default, probe},
+    },
 };
 use serde::Serialize;
 
@@ -34,8 +37,22 @@ enum Command {
     Workspace(WorkspaceCommand),
     #[command(subcommand)]
     Desktop(DesktopCommand),
-    /// Print the complete logical hierarchy as JSON.
+    /// Print the complete logical hierarchy as JSON. Strictly read-only: never
+    /// creates, migrates or repairs a database (run `depthos init` first).
     Tree,
+    /// Explicitly initialize a user-owned database (never overwrites anything).
+    Init {
+        /// Also create Default World / Primary Workspace / Desktop 1 when the
+        /// database holds no worlds yet.
+        #[arg(long)]
+        default_hierarchy: bool,
+    },
+    /// Read-only probe of the database state (never creates or modifies it).
+    Status {
+        /// Machine-readable output (always JSON on stdout).
+        #[arg(long)]
+        json: bool,
+    },
     /// Check schema version, foreign keys and database integrity.
     Doctor,
     /// Observe native state in a foreground session-bus receiver; never opens SQLite.
@@ -187,10 +204,50 @@ fn status(id: impl Serialize) -> Result<()> {
     json(serde_json::json!({ "id": id }))
 }
 
+fn database_path(cli: &Cli) -> Result<PathBuf> {
+    cli.db.clone().map(Ok).unwrap_or_else(default_path)
+}
+
+fn run_status(cli: &Cli, json_output: bool) -> Result<()> {
+    let status = probe(&database_path(cli)?)?;
+    if json_output {
+        return json(&status);
+    }
+    let mut output = io::stdout().lock();
+    writeln!(
+        output,
+        "{}: {}",
+        status.path.display(),
+        status.state.as_str()
+    )?;
+    if let Some(detail) = &status.detail {
+        writeln!(output, "  {detail}")?;
+    }
+    if let Some(counts) = status.counts {
+        writeln!(
+            output,
+            "  {} worlds, {} workspaces, {} desktops",
+            counts.worlds, counts.workspaces, counts.desktops
+        )?;
+    }
+    Ok(())
+}
+
+fn run_init(cli: &Cli, default_hierarchy: bool) -> Result<()> {
+    let options = InitOptions { default_hierarchy };
+    let report = match &cli.db {
+        Some(path) => initialize(path, options)?,
+        None => initialize_default(options)?,
+    };
+    json(&report)
+}
+
 fn run(cli: Cli) -> Result<bool> {
-    let store = match &cli.db {
-        Some(path) => SqliteStore::open(path)?,
-        None => SqliteStore::open_default()?,
+    let store = match (&cli.command, &cli.db) {
+        // Read-only inspector: must never create or migrate user data.
+        (Command::Tree, _) => SqliteStore::open_read_only(&database_path(&cli)?)?,
+        (_, Some(path)) => SqliteStore::open(path)?,
+        (_, None) => SqliteStore::open_default()?,
     };
     if matches!(cli.command, Command::Doctor) {
         let path = cli.db.map(Ok).unwrap_or_else(default_path)?;
@@ -238,7 +295,12 @@ fn run(cli: Cli) -> Result<bool> {
             DesktopCommand::Delete { id } => service.delete_desktop(id)?,
         },
         Command::Tree => json(service.tree()?)?,
-        Command::Doctor | Command::System(_) | Command::Controller(_) | Command::Ui(_) => {
+        Command::Doctor
+        | Command::Init { .. }
+        | Command::Status { .. }
+        | Command::System(_)
+        | Command::Controller(_)
+        | Command::Ui(_) => {
             unreachable!()
         }
     }
@@ -308,10 +370,30 @@ fn run_ui(cli: &Cli, command: &UiCommand) -> ExitCode {
     }
 }
 
+fn finish(result: Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("depthos: {error}");
+            match error {
+                // The target exists but is not safe to initialize or use.
+                Error::InitRefused(_) => ExitCode::from(3),
+                _ => ExitCode::FAILURE,
+            }
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Command::Ui(command) = &cli.command {
         return run_ui(&cli, command);
+    }
+    if let Command::Status { json } = &cli.command {
+        return finish(run_status(&cli, *json));
+    }
+    if let Command::Init { default_hierarchy } = &cli.command {
+        return finish(run_init(&cli, *default_hierarchy));
     }
     if let Command::Controller(ControllerCommand::Run { timeout_seconds }) = &cli.command {
         let result = tokio::runtime::Builder::new_multi_thread()

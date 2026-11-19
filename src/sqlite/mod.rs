@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use rusqlite::{Connection, OpenFlags, Params, Row, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, Params, Row, Transaction, TransactionBehavior, params};
 use uuid::Uuid;
 
 use crate::{
@@ -115,6 +115,43 @@ impl SqliteStore {
         Ok(Self { connection })
     }
 
+    /// Opens an existing database strictly read-only: never creates the file,
+    /// never creates its directory and never migrates. Used by read paths
+    /// (`depthos tree`, the UI) so that merely looking cannot create user data.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(path_error(
+                    path,
+                    "database does not exist; run `depthos init` to create it",
+                ));
+            }
+            Err(e) => return Err(path_error(path, e)),
+        };
+        if !metadata.is_file()
+            || metadata.nlink() != 1
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(path_error(
+                path,
+                "expected a private regular file without links (mode 0600)",
+            ));
+        }
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let connection = Connection::open_with_flags(path, flags)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        connection.pragma_update(None, "trusted_schema", false)?;
+        let app: i64 = connection.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        match (app, version) {
+            (APP_ID, 1..=VERSION) => Ok(Self { connection }),
+            (APP_ID, _) => Err(Error::SchemaVersion(version)),
+            _ => Err(Error::ForeignDatabase),
+        }
+    }
+
     pub fn doctor(&self) -> Result<Doctor> {
         let connection = self.connection.unchecked_transaction()?;
         for (table, columns) in [
@@ -148,6 +185,13 @@ fn migrate(connection: &mut Connection, migrations: &[&str]) -> Result<()> {
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(Error::Migration)?;
+    migrate_tx(&tx, migrations)?;
+    tx.commit().map_err(Error::Migration)
+}
+
+/// Applies pending migrations inside the caller's transaction so that
+/// initialization can compose schema creation and seeding atomically.
+fn migrate_tx(tx: &Transaction<'_>, migrations: &[&str]) -> Result<()> {
     let app: i64 = tx
         .pragma_query_value(None, "application_id", |r| r.get(0))
         .map_err(Error::Migration)?;
@@ -174,7 +218,7 @@ fn migrate(connection: &mut Connection, migrations: &[&str]) -> Result<()> {
         tx.pragma_update(None, "user_version", index as i64 + 1)
             .map_err(Error::Migration)?;
     }
-    tx.commit().map_err(Error::Migration)
+    Ok(())
 }
 
 fn rows<T>(
@@ -464,6 +508,8 @@ impl Store for SqliteStore {
         Ok(Universe { worlds })
     }
 }
+
+pub mod init;
 
 #[cfg(test)]
 mod tests;

@@ -10,7 +10,7 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "net", "io-util"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
-rustix = { version = "1", features = ["process", "net"] }
+rustix = { version = "1", features = ["process", "net", "fs"] }
 
 [package]
 name = "depthos-core"

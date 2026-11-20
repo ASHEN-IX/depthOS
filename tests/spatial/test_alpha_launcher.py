@@ -89,7 +89,8 @@ def run_client(mode, folder, screenshot):
         assert backend.property("observationHealth") != "Live"
         original = hashlib.sha256(db.read_bytes()).hexdigest()
         if screenshot:
-            yield window.isExposed
+            capture_at = time.monotonic() + 0.5
+            yield lambda: window.isExposed() and time.monotonic() >= capture_at
             assert window.grabWindow().save(str(screenshot))
         assert original == hashlib.sha256(db.read_bytes()).hexdigest()
 

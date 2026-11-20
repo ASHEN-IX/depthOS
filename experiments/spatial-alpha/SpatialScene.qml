@@ -813,15 +813,16 @@ Item {
         }
     }
 
-    Loader {
+    NeonLabel {
+        objectName: scene.wideChrome ? "demoWatermark" : ""
+        visible: scene.wideChrome && !!scene.backend?.isDemo
+        anchors.right: parent.right
+        anchors.rightMargin: 38
         anchors.bottom: parent.bottom
-        anchors.horizontalCenter: parent.horizontalCenter
-        width: parent.width
-        height: Math.round(scene.height * 0.117)
-        active: scene.wideChrome
-        enabled: !scene.navigationBlocked()
+        anchors.bottomMargin: 15
+        text: "DEMO DATA"
+        color: NeonTheme.precision
         z: 9
-        sourceComponent: ReferenceFooter { scene: scene }
     }
 
     Rectangle {

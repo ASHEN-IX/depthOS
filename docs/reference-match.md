@@ -9,7 +9,7 @@ QT_QPA_PLATFORM=wayland /home/ashenix/Projects/DepthOS-phase-4-2-1/tools/depthos
   --reference-demo --window-size 1672x941
 ```
 
-The reference catalog opens at Research and populates the four sample Worlds, 12 Workspaces, and 36 Desktops. The counts are computed from those records. The clock uses the local time. The status badge shows the actual source and observer state. Footer controls use working keyboard hints. The reference catalog is explicitly marked as demo data.
+The reference catalog opens at Research and populates the four sample Worlds, 12 Workspaces, and 36 Desktops. The counts are computed from those records. The clock uses the local time. The status badge shows the actual source and observer state. The reference catalog is explicitly marked as demo data.
 
 ## Screenshot comparison
 
@@ -24,9 +24,11 @@ The production launcher generated the four reference renders under a private vir
 
 ## Controls
 
+The wide layout leaves the lower orbit clear, as shown in `artifacts/reference-match/screenshots/no-console-footer.png`. The demo label remains in the corner, and the compact layout retains its plain-text keyboard hints.
+
 - Top and side hierarchy controls navigate through available Worlds, Workspaces, and Desktops.
-- The top Search icon, side Search button, and footer Search action open the existing searchable hierarchy.
-- The Settings gear, top bell, and footer Menu action open the Spatial Control Center.
+- The top Search icon, side Search button, and / shortcut open the existing searchable hierarchy.
+- The Settings gear, top bell, and F2 shortcut open the Spatial Control Center.
 - Paging dots select Worlds. The hero chevron and View All open Workspaces.
 - Workspace previews select the workspace. Each ellipsis menu can open the Workspace or its Logical Desktops.
 

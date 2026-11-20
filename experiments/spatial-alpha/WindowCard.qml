@@ -9,7 +9,10 @@ Rectangle {
     property bool isFocused: false
     property bool showTitles: false // Privacy redaction toggle
     property bool motionOff: false
+    // Demo fixtures may carry sample "Live" strings. The painted badge must not.
+    property bool demoSource: false
     readonly property bool available: !(card.window && card.window.unavailable)
+    readonly property string paintedStatus: card.demoSource ? "Demo" : ((card.window && card.window.statusBadge) ? card.window.statusBadge : "Unknown")
 
     signal chosen
     signal activated
@@ -121,7 +124,7 @@ Rectangle {
             StatusBadge {
                 id: statusBadge
                 anchors.verticalCenter: parent.verticalCenter
-                status: (card.window && card.window.statusBadge) ? card.window.statusBadge : "Unknown"
+                status: card.paintedStatus
             }
         }
 

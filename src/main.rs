@@ -53,7 +53,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Check schema version, foreign keys and database integrity.
+    /// Check schema version, foreign keys and database integrity. Read-only:
+    /// never creates or migrates a database.
     Doctor,
     /// Observe native state in a foreground session-bus receiver; never opens SQLite.
     #[command(subcommand)]
@@ -242,12 +243,26 @@ fn run_init(cli: &Cli, default_hierarchy: bool) -> Result<()> {
     json(&report)
 }
 
+fn command_is_read_only(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Tree
+            | Command::Doctor
+            | Command::World(WorldCommand::List)
+            | Command::Workspace(WorkspaceCommand::List { .. })
+            | Command::Desktop(DesktopCommand::List { .. })
+    )
+}
+
 fn run(cli: Cli) -> Result<bool> {
-    let store = match (&cli.command, &cli.db) {
-        // Read-only inspector: must never create or migrate user data.
-        (Command::Tree, _) => SqliteStore::open_read_only(&database_path(&cli)?)?,
-        (_, Some(path)) => SqliteStore::open(path)?,
-        (_, None) => SqliteStore::open_default()?,
+    let store = if command_is_read_only(&cli.command) {
+        // Reads must not create, migrate, or repair. `depthos init` is the
+        // only implicit-path creator, and only when the user asks for it.
+        SqliteStore::open_read_only(&database_path(&cli)?)?
+    } else if let Some(path) = &cli.db {
+        SqliteStore::open(path)?
+    } else {
+        SqliteStore::open_default()?
     };
     if matches!(cli.command, Command::Doctor) {
         let path = cli.db.map(Ok).unwrap_or_else(default_path)?;

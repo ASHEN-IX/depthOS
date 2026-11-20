@@ -145,6 +145,47 @@ fn tree_never_creates_or_migrates_a_database() {
 }
 
 #[test]
+fn read_commands_do_not_create_a_missing_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let at = temp.path();
+    for args in [
+        &["doctor"][..],
+        &["world", "list"],
+        &[
+            "workspace",
+            "list",
+            "--world",
+            "00000000-0000-0000-0000-000000000000",
+        ],
+        &[
+            "desktop",
+            "list",
+            "--workspace",
+            "00000000-0000-0000-0000-000000000000",
+        ],
+        &["--db", "absent.sqlite3", "doctor"],
+        &["--db", "absent.sqlite3", "world", "list"],
+    ] {
+        let result = cli(at, args);
+        assert!(
+            !result.status.success(),
+            "{args:?} created or succeeded: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            stderr.contains("depthos init"),
+            "{args:?} stderr did not point at init: {stderr}"
+        );
+    }
+    assert!(!at.join("data").exists(), "a read created the data dir");
+    assert!(
+        !at.join("absent.sqlite3").exists(),
+        "a read created an explicit DB"
+    );
+}
+
+#[test]
 fn init_creates_private_default_hierarchy_atomically() {
     let temp = tempfile::tempdir().unwrap();
     let at = temp.path();

@@ -152,16 +152,21 @@ fn rejects_invalid_cli_input_and_missing_parent_without_populating_hierarchy() {
 fn default_database_uses_only_isolated_xdg_data_and_private_permissions() {
     let temp = tempfile::tempdir().unwrap();
     let at = temp.path();
-    let doctor = output(cli(at, &["doctor"]));
+    let created = output(cli(at, &["init"]));
     let dir = at.join("isolated-data/depthos");
-    assert_eq!(
-        doctor["path"].as_str().unwrap(),
-        dir.join("workspaces.sqlite3").to_str().unwrap()
-    );
+    let db = dir.join("workspaces.sqlite3");
+    assert_eq!(created["path"].as_str().unwrap(), db.to_str().unwrap());
     assert_eq!(
         fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
         0o700
     );
+    assert_eq!(
+        fs::metadata(&db).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let doctor = output(cli(at, &["doctor"]));
+    assert_eq!(doctor["healthy"], true);
+    assert_eq!(doctor["path"].as_str().unwrap(), db.to_str().unwrap());
     assert!(!at.join("empty-home").exists());
 }
 

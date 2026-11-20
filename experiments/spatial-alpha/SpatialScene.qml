@@ -1067,6 +1067,7 @@ Item {
                                 objectName: "windowCard-" + winDelegate.modelData.id
 
                                 window: winDelegate.modelData
+                                demoSource: !!(scene.backend && (scene.backend.isDemo || scene.backend.mockMode))
                                 isSelected: scene.backend && scene.backend.selectedWindowId === winDelegate.modelData.id
                                 isFocused: scene.windowIndex === winDelegate.index && scene.currentLevel === 3
                                 showTitles: scene.showTitles

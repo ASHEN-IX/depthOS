@@ -672,6 +672,34 @@ Item {
                 compare(findChild(scene, "workspaceCard-" + scene.currentWorkspaces[i].id).statusBadge, "Demo");
         }
 
+        function test_demo_window_cards_are_not_painted_live() {
+            be.loadMock();
+            let desktopId = "";
+            for (let i = 0; i < be.desktops.length; ++i) {
+                if (be.getWindowsForDesktop(be.desktops[i].id).length > 0) {
+                    desktopId = be.desktops[i].id;
+                    break;
+                }
+            }
+            verify(desktopId !== "");
+            be.selectDesktop(desktopId);
+            scene.currentLevel = 3;
+            scene.syncIndices();
+            wait(30);
+            verify(scene.currentWindows.length > 0);
+            for (let i = 0; i < scene.currentWindows.length; ++i) {
+                const card = findChild(scene, "windowCard-" + scene.currentWindows[i].id);
+                verify(card !== null);
+                compare(card.demoSource, true);
+                compare(card.paintedStatus, "Demo");
+            }
+            be.mockMode = false;
+            be.sourceKind = "sqlite";
+            wait(20);
+            compare(findChild(scene, "windowCard-" + scene.currentWindows[0].id).demoSource, false);
+            compare(findChild(scene, "windowCard-" + scene.currentWindows[0].id).paintedStatus, scene.currentWindows[0].statusBadge);
+        }
+
         // ---------------------------------------------------------------- onboarding & empty states
         function test_onboarding_offer_shows_two_explicit_choices_and_nothing_is_created_implicitly() {
             be.worlds = [];

@@ -184,7 +184,56 @@ def load_from_db_path(db_path, backend):
         return False
 
 
-def read_controller(owner):
+def read_shelves(query, endpoint, hierarchy, revision, instance):
+    import dbus
+
+    parents = {d["id"]: d["workspaceId"] for d in hierarchy[2]}
+    workspaces = {w["id"] for w in hierarchy[1]}
+    cursor, expected = 0, ""
+    windows, seen = [], set()
+    for _ in range(64):
+        reply = query(endpoint.GetDesktopShelves, dbus.UInt32(cursor), expected)
+        data = reply["data"]
+        freshness = data["freshness"]
+        if (reply["instanceId"] != instance or data["hierarchyRevision"] != revision
+                or data["titlePolicy"] != "withheld"):
+            raise ValueError("Incompatible shelf projection")
+        items, next_cursor = data["items"], data["nextCursor"]
+        if not reply["available"]:
+            if cursor or items or next_cursor is not None or freshness not in ("stale", "unavailable"):
+                raise ValueError("Invalid unavailable projection")
+            return freshness, []
+        if freshness != "live" or not re.fullmatch(r"[1-9][0-9]{0,19}", data["lastValidatedSequence"]):
+            raise ValueError("Invalid shelf evidence")
+        if not isinstance(items, list) or len(items) > 64:
+            raise ValueError("Invalid shelf page")
+        expected = reply["revision"]
+        for row in items:
+            if set(row) != {"id", "workspaceId", "desktopId", "applicationId", "assignment", "focused"}:
+                raise ValueError("Unknown window field")
+            identifier, workspace, desktop = row["id"], row["workspaceId"], row["desktopId"]
+            app_id, assignment = row["applicationId"], row["assignment"]
+            if (not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", identifier)
+                    or identifier in seen or workspace not in workspaces
+                    or (desktop is not None and parents.get(desktop) != workspace)
+                    or assignment not in ("observed", "explicit", "unassigned", "unknown")
+                    or ((desktop is not None) != (assignment in ("observed", "explicit")))
+                    or (app_id is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", app_id))
+                    or type(row["focused"]) is not bool):
+                raise ValueError("Invalid window record")
+            seen.add(identifier)
+            windows.append({"id": identifier, "workspaceId": workspace, "desktopId": desktop,
+                            "appId": app_id, "titleRedacted": True, "assignment": assignment,
+                            "focused": row["focused"], "statusBadge": "Live"})
+        if next_cursor is None:
+            return freshness, windows
+        if next_cursor != cursor + 64 or len(items) != 64 or next_cursor >= 4096:
+            raise ValueError("Invalid shelf cursor")
+        cursor = next_cursor
+    raise ValueError("Shelf page limit exceeded")
+
+
+def read_controller(owner, previous=None, scopes=7):
     """Fetch the bounded read-only projection on a worker thread."""
     import dbus
 
@@ -204,51 +253,73 @@ def read_controller(owner):
                 raise ValueError("Unsupported controller reply")
             return reply
 
-        cursor = 0
-        revision = ""
-        worlds, workspaces, desktops = [], [], []
-        # The bridge bounds hierarchy rows to 4096 and returns pages of 64.
-        for _ in range(64):
-            reply = query(endpoint.GetHierarchy, dbus.UInt32(cursor), revision)
-            revision = reply["revision"]
-            for item in reply["data"]["items"]:
-                kind = item["kind"]
-                row = {"id": item["id"], "name": item["name"]}
-                if kind == "world":
-                    worlds.append(row)
-                elif kind == "workspace":
-                    row["worldId"] = item["parentId"]
-                    workspaces.append(row)
-                elif kind == "desktop":
-                    row["workspaceId"] = item["parentId"]
-                    desktops.append(row)
-            next_cursor = reply["data"]["nextCursor"]
-            if next_cursor is None:
-                break
-            if not cursor < next_cursor < 4096:
-                raise ValueError("Invalid hierarchy cursor")
-            cursor = next_cursor
-        else:
-            raise ValueError("Hierarchy page limit exceeded")
-
+        if previous is None or scopes & 1:
+            capabilities = query(endpoint.GetCapabilities)
+            capability_data = capabilities["data"]
+            instance = capabilities["instanceId"]
+            if capability_data.get("readOnly") is not True or capability_data.get("assignmentMutations") is not False:
+                raise ValueError("Incompatible controller capabilities")
+            shelf_version = capability_data.get("desktopShelvesVersion")
+            cursor, revision = 0, ""
+            worlds, workspaces, desktops = [], [], []
+            for _ in range(64):
+                reply = query(endpoint.GetHierarchy, dbus.UInt32(cursor), revision)
+                if reply["instanceId"] != instance:
+                    raise ValueError("Hierarchy owner changed")
+                revision = reply["revision"]
+                for item in reply["data"]["items"]:
+                    kind = item["kind"]
+                    row = {"id": item["id"], "name": item["name"]}
+                    if kind == "world":
+                        worlds.append(row)
+                    elif kind == "workspace":
+                        row["worldId"] = item["parentId"]
+                        workspaces.append(row)
+                    elif kind == "desktop":
+                        row["workspaceId"] = item["parentId"]
+                        desktops.append(row)
+                next_cursor = reply["data"]["nextCursor"]
+                if next_cursor is None:
+                    break
+                if next_cursor != cursor + 64 or next_cursor >= 4096:
+                    raise ValueError("Invalid hierarchy cursor")
+                cursor = next_cursor
+            else:
+                raise ValueError("Hierarchy page limit exceeded")
+            hierarchy = (worlds, workspaces, desktops)
+            available = reply["available"]
+            previous = (hierarchy, revision, available, instance, shelf_version)
+        hierarchy, revision, available, instance, shelf_version = previous
         health_reply = query(endpoint.GetControllerHealth)
+        if health_reply["instanceId"] != instance:
+            raise ValueError("Controller owner changed")
         health = health_reply["data"].get("health") or {}
-        return worlds, workspaces, desktops, health, reply["available"]
+        shelves = None
+        retry = False
+        if scopes & 5:
+            if not available or type(shelf_version) is not int or shelf_version != 1:
+                shelves = ("unavailable", [])
+            else:
+                try:
+                    shelves = read_shelves(query, endpoint, hierarchy, revision, instance)
+                except dbus.exceptions.DBusException as exc:
+                    retry = exc.get_dbus_name() == "org.freedesktop.DBus.Error.InvalidArgs"
+                    shelves = ("unavailable", [])
+                except (ValueError, KeyError, TypeError):
+                    shelves = ("unavailable", [])
+        return previous, health, shelves, retry
     finally:
         bus.close()
 
 
 def apply_controller_hierarchy(backend, hierarchy):
     worlds, workspaces, desktops = hierarchy
-    # Controller context targets are Workspace IDs. The read-only projection
-    # has no confirmed native-to-logical desktop mapping or display metadata.
     previous_desktop = backend.property("selectedDesktopId")
     previous_workspace = backend.property("selectedWorkspaceId")
     previous_world = backend.property("selectedWorldId")
     backend.setProperty("worlds", worlds)
     backend.setProperty("workspaces", workspaces)
     backend.setProperty("desktops", desktops)
-    backend.setProperty("windows", [])
     world = next((w for w in worlds if w["id"] == previous_world), worlds[0] if worlds else None)
     descendants = [w for w in workspaces if world and w["worldId"] == world["id"]]
     workspace = next((w for w in descendants if w["id"] == previous_workspace),
@@ -259,7 +330,6 @@ def apply_controller_hierarchy(backend, hierarchy):
     backend.setProperty("selectedWorldId", world["id"] if world else "")
     backend.setProperty("selectedWorkspaceId", workspace["id"] if workspace else "")
     backend.setProperty("selectedDesktopId", desktop["id"] if desktop else "")
-    backend.setProperty("selectedWindowId", "")
 
 
 def apply_controller_health(backend, health, hierarchy_available):
@@ -560,8 +630,10 @@ def main():
             super().__init__(app)
             self.owner = owner
             self.busy = False
-            self.pending = False
+            self.pending = 0
             self.hierarchy = None
+            self.cached = None
+            self.retry = True
             self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="depthos-controller")
             self.ready.connect(self.apply)
             self.watcher = QDBusServiceWatcher(
@@ -576,10 +648,12 @@ def main():
 
         @pyqtSlot(str, "uint")
         def invalidated(self, _instance, _scope):
-            self.refresh()
+            self.refresh(_scope & 7 or 7)
 
         def owner_changed(self, _service, _old, owner):
             self.owner = owner
+            self.cached = None
+            self.retry = True
             if backend.property("isDemo"):
                 return
             self.mark_unavailable()
@@ -593,20 +667,33 @@ def main():
             backend.setProperty("observerLive", False)
             backend.setProperty("observerDetail", "Controller unavailable")
             backend.setProperty("observationHealth", "Unavailable")
+            self.apply_shelves("unavailable", [])
 
-        def refresh(self):
+        def apply_shelves(self, freshness, windows):
+            if freshness != backend.property("shelfFreshness"):
+                backend.setProperty("shelfFreshness", freshness)
+            current = backend.property("windows")
+            if hasattr(current, "toVariant"):
+                current = current.toVariant()
+            if windows != current:
+                backend.setProperty("windows", windows)
+            selected = backend.property("selectedWindowId")
+            desktop = backend.property("selectedDesktopId")
+            if selected and not any(row["id"] == selected and row["desktopId"] == desktop for row in windows):
+                backend.setProperty("selectedWindowId", "")
+
+        def refresh(self, scopes=7):
             if not self.owner or backend.property("isDemo"):
                 return
             if self.busy:
-                self.pending = True
+                self.pending |= scopes
                 return
             self.busy = True
-            owner = self.owner
-            self.pool.submit(self.read, owner)
+            self.pool.submit(self.read, self.owner, self.cached, scopes if self.cached else 7)
 
-        def read(self, owner):
+        def read(self, owner, cached, scopes):
             try:
-                payload = read_controller(owner)
+                payload = read_controller(owner, cached, scopes)
             except Exception:
                 # Transport errors can contain server-provided text.
                 payload = None
@@ -619,14 +706,24 @@ def main():
                 if payload is not None:
                     first = backend.property("sourceKind") != "controller"
                     was_connected = backend.property("state") == "Connected"
-                    worlds, workspaces, desktops, health, available = payload
-                    hierarchy = (worlds, workspaces, desktops)
+                    self.cached, health, shelves, retry = payload
+                    hierarchy, _, available, _, _ = self.cached
+                    if retry and self.retry:
+                        self.retry = False
+                        self.pending |= 7
+                    elif not retry:
+                        self.retry = True
                     if available and (first or hierarchy != self.hierarchy):
                         self.hierarchy = hierarchy
                         apply_controller_hierarchy(backend, hierarchy)
                         backend.setProperty("sourceLoadedAt", date_label())
                         scene.syncIndices()
                     apply_controller_health(backend, health, available)
+                    if health.get("observation") != "Synchronized":
+                        self.apply_shelves("stale" if health.get("observation") == "Desynchronized"
+                                           else "unavailable", [])
+                    elif shelves is not None and not self.pending & 5:
+                        self.apply_shelves(*shelves)
                     if first:
                         finish_sync()
                     if not was_connected:
@@ -639,8 +736,8 @@ def main():
                     if backend.property("sourceKind") == "none":
                         present_database(backend, scene, None)
             if self.pending:
-                self.pending = False
-                self.refresh()
+                scopes, self.pending = self.pending, 0
+                self.refresh(scopes)
 
     def try_controller(be):
         reader = getattr(engine, "controller_reader", None)

@@ -83,6 +83,23 @@ Item {
     property var workspaces: []
     property var desktops: []
     property var windows: []
+    property string shelfFreshness: "unavailable"
+
+    function workspaceWindowSummary(workspaceId) {
+        if (shelfFreshness !== "live" || sourceKind !== "controller")
+            return "";
+        let unassigned = 0;
+        let unknown = 0;
+        for (const row of windows) {
+            if (row.workspaceId !== workspaceId || row.desktopId)
+                continue;
+            if (row.assignment === "unassigned")
+                ++unassigned;
+            else if (row.assignment === "unknown")
+                ++unknown;
+        }
+        return unassigned + " Unassigned  ·  " + unknown + " Unknown";
+    }
 
     property string selectedWorldId: ""
     property string selectedWorkspaceId: ""

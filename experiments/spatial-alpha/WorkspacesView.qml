@@ -189,6 +189,14 @@ LevelTransition {
             }
 
             NeonText {
+                objectName: "workspaceWindowSummary"
+                width: parent.width
+                visible: text !== ""
+                color: NeonTheme.muted
+                text: view.scene.backend ? view.scene.backend.workspaceWindowSummary(view.scene.backend.selectedWorkspaceId) : ""
+            }
+
+            NeonText {
                 visible: view.scene.currentWorkspaces.length === 0
                 text: "No workspaces created in this world yet."
                 color: NeonTheme.muted

@@ -45,7 +45,8 @@ CyberCard {
         NeonText {
             width: parent.width
             text: card.protectedIdentity ? "Protected identity" : card.safeCaption ||
-                (card.showTitles ? "Title unavailable" : "Title hidden")
+                (!card.demoSource && card.window && card.window.titleRedacted ? "Title withheld" :
+                 card.showTitles ? "Title unavailable" : "Title hidden")
             color: NeonTheme.muted
             font.pixelSize: NeonTheme.detailSize
             elide: Text.ElideRight
@@ -95,6 +96,12 @@ CyberCard {
                 visible: !card.protectedIdentity && !!(card.window && card.window.focused)
                 tone: NeonTheme.emerald
                 label: card.demoSource ? "Sample focus" : "Focused"
+            }
+
+            NeonBadge {
+                visible: !card.demoSource && !!(card.window && card.window.assignment)
+                tone: NeonTheme.precision
+                label: card.window && card.window.assignment === "explicit" ? "Explicit" : "Observed"
             }
 
             NeonBadge {

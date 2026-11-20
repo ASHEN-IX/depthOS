@@ -6,6 +6,7 @@ import "Presentation.js" as Display
 LevelTransition {
     id: view
     required property var scene
+    readonly property var backend: scene.backend
     readonly property var desktop: scene.backend ? scene.backend.currentDesktop : null
     readonly property real margin: width < NeonTheme.narrowWidth ? NeonTheme.compactMargin : NeonTheme.margin
     readonly property real gap: NeonTheme.gap
@@ -22,6 +23,34 @@ LevelTransition {
 
     component Body: Item {
         readonly property alias panContent: content
+        readonly property var rows: view.scene.currentWindows
+        onRowsChanged: syncWindows()
+        Component.onCompleted: syncWindows()
+
+        ListModel { id: windowModel }
+
+        function syncWindows() {
+            const wanted = new Set(rows.map(row => row.id));
+            for (let index = windowModel.count - 1; index >= 0; --index) {
+                if (!wanted.has(windowModel.get(index).recordId))
+                    windowModel.remove(index);
+            }
+            for (let index = 0; index < rows.length; ++index) {
+                const row = rows[index];
+                const json = JSON.stringify(row);
+                let found = index;
+                while (found < windowModel.count && windowModel.get(found).recordId !== row.id)
+                    ++found;
+                if (found === windowModel.count) {
+                    windowModel.insert(index, { recordId: row.id, recordJson: json });
+                    continue;
+                }
+                if (found !== index)
+                    windowModel.move(found, index, 1);
+                if (windowModel.get(index).recordJson !== json)
+                    windowModel.setProperty(index, "recordJson", json);
+            }
+        }
 
         Column {
             id: content
@@ -104,7 +133,10 @@ LevelTransition {
                             id: observer
                             anchors.right: parent.right
                             anchors.verticalCenter: desktopName.verticalCenter
-                            status: view.scene.workspaceSourceBadge()
+                            status: view.backend && !view.backend.isDemo
+                                ? (view.backend.shelfFreshness === "live" ? "Live"
+                                   : view.backend.shelfFreshness === "stale" ? "Stale" : "Unavailable")
+                                : view.scene.workspaceSourceBadge()
                         }
                         NeonText {
                             id: desktopDetail
@@ -117,6 +149,8 @@ LevelTransition {
                             text: {
                                 if (!view.desktop)
                                     return "";
+                                if (view.backend && !view.backend.isDemo && view.backend.shelfFreshness === "live")
+                                    return Display.countLabel(view.scene.currentWindows.length, "verified window", "verified windows") + "  ·  Titles withheld";
                                 const native = Display.safeText(view.desktop.nativeDesktopName || view.desktop.nativeDesktopId);
                                 const role = Display.safeText(view.desktop.role);
                                 const observed = Display.safeText(view.desktop.observedAt);
@@ -130,14 +164,15 @@ LevelTransition {
                         spacing: view.gap
 
                         Repeater {
-                            model: view.scene.currentWindows
+                            model: windowModel
                             delegate: WindowCard {
                                 id: windowCard
-                                required property var modelData
+                                required property string recordId
+                                required property string recordJson
                                 required property int index
-                                objectName: "windowCard-" + modelData.id
+                                objectName: "windowCard-" + recordId
                                 width: view.cardWidth
-                                window: modelData
+                                window: JSON.parse(recordJson)
                                 demoSource: !!(view.scene.backend && (view.scene.backend.isDemo || view.scene.backend.mockMode))
                                 isSelected: view.scene.windowIndex === index
                                 isFocused: isSelected && view.activeLevel
@@ -148,7 +183,7 @@ LevelTransition {
                                 pointerEnabled: view.activeLevel && !view.scene.navigationBlocked()
 
                                 onChosen: {
-                                    view.scene.backend.selectWindow(modelData.id);
+                                    view.scene.backend.selectWindow(recordId);
                                     view.scene.forceActiveFocus();
                                 }
                             }
@@ -167,10 +202,28 @@ LevelTransition {
                             const b = view.scene.backend;
                             if (b && b.isDemo)
                                 return "This sample desktop has no window records.";
+                            if (b && b.shelfFreshness === "live")
+                                return "No verified windows on this logical desktop.";
+                            if (b && b.shelfFreshness === "stale")
+                                return "Window observations are stale. Waiting for a fresh snapshot.";
                             if (b && b.observerLive)
                                 return "Window associations are unavailable for this logical desktop.";
                             return "Native observer unavailable. Window metadata cannot be shown.";
                         }
+                    }
+                    NeonText {
+                        width: parent.width
+                        visible: view.backend && view.backend.shelfFreshness === "live"
+                        color: NeonTheme.muted
+                        wrapMode: Text.WordWrap
+                        text: "Protected windows and windows outside the verified workspace are hidden."
+                    }
+                    NeonText {
+                        width: parent.width
+                        visible: text !== ""
+                        color: NeonTheme.muted
+                        wrapMode: Text.WordWrap
+                        text: view.backend ? view.backend.workspaceWindowSummary(view.backend.selectedWorkspaceId) : ""
                     }
                 }
             }

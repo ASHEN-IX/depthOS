@@ -329,6 +329,60 @@ Item {
             compare(scene.worldIndex, before + 1, "Keyboard navigation works immediately after dismissal");
         }
 
+        // PTR-10: Rapid double clicks debounced at single level
+        function test_ptr10_rapid_double_clicks_debounced_at_single_level() {
+            const target = be.worlds[0];
+            const card = findChild(scene, "worldCard-" + target.id);
+            verify(card !== null);
+
+            // First double click sequence enters Level 2
+            mouseDoubleClickSequence(card, card.width / 2, card.height / 2);
+            compare(scene.currentLevel, 2, "First double-click enters Level 2");
+
+            // Immediate second double click sequence within debounce threshold (< 320ms)
+            const wsCard = findChild(scene, "workspaceCard-" + scene.currentWorkspaces[0].id);
+            if (wsCard) {
+                mouseDoubleClickSequence(wsCard, wsCard.width / 2, wsCard.height / 2);
+            }
+            compare(scene.currentLevel, 2, "Rapid second double-click is debounced and does not punch through to Level 3");
+        }
+
+        // PTR-11: Window card double-click never activates native or drills down
+        function test_ptr11_window_card_double_click_never_activates_native_or_drills() {
+            scene.currentLevel = 3;
+            scene.syncIndices();
+            const target = scene.currentWindows[0];
+            const card = findChild(scene, "windowCard-" + target.id);
+            verify(card !== null);
+
+            const beforeTransitions = scene.levelTransitions;
+            mouseDoubleClickSequence(card, card.width / 2, card.height / 2);
+
+            compare(scene.currentLevel, 3, "Window card double click remains on Level 3");
+            compare(scene.levelTransitions, beforeTransitions, "No level transitions triggered by window card double click");
+            compare(be.selectedWindowId, target.id, "Window card double click selects only");
+        }
+
+        // PTR-12: Unavailable cards reject click and double click
+        function test_ptr12_unavailable_cards_reject_pointer_and_double_click() {
+            const worlds = be.worlds.slice();
+            worlds[1] = Object.assign({}, worlds[1], { unavailable: true });
+            be.worlds = worlds;
+            wait(20);
+
+            const card = findChild(scene, "worldCard-" + worlds[1].id);
+            verify(card !== null);
+            compare(card.available, false, "Card reports available == false");
+
+            // Click rejected
+            mouseClick(card, card.width / 2, card.height / 2);
+            verify(be.selectedWorldId !== worlds[1].id, "Click on unavailable card is rejected");
+
+            // Double click rejected
+            mouseDoubleClickSequence(card, card.width / 2, card.height / 2);
+            compare(scene.currentLevel, 1, "Double click on unavailable card is rejected and does not drill down");
+        }
+
         // =================================================================
         // AREA 2: GESTURE HANDLING
         // =================================================================

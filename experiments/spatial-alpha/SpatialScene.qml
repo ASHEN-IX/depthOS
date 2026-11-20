@@ -160,6 +160,7 @@ Item {
 
     function resetInteractionClocks() {
         scene.lastLevelStepMs = -1e15;
+        scene.lastPointerDrillMs = -1e15;
         scene.pinchActive = false;
         scene.pinchLatched = false;
     }
@@ -453,7 +454,17 @@ Item {
         }
     }
 
+    property real lastPointerDrillMs: 0
+
     function enterDeeper() {
+        scene.drillDown(true);
+    }
+
+    function pointerDrillDown() {
+        const now = Date.now();
+        if (now - scene.lastPointerDrillMs < 320)
+            return;
+        scene.lastPointerDrillMs = now;
         scene.drillDown(true);
     }
 
@@ -823,7 +834,7 @@ Item {
                                         return;
                                     scene.worldIndex = worldDelegate.index;
                                     scene.backend.selectWorld(worldDelegate.modelData.id);
-                                    scene.enterDeeper();
+                                    scene.pointerDrillDown();
                                 }
                             }
                         }
@@ -938,7 +949,7 @@ Item {
                                         return;
                                     scene.workspaceIndex = wsDelegate.index;
                                     scene.backend.selectWorkspace(wsDelegate.modelData.id);
-                                    scene.enterDeeper();
+                                    scene.pointerDrillDown();
                                 }
                             }
                         }

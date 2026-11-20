@@ -219,7 +219,7 @@ Rectangle {
         id: hoverArea
         anchors.fill: parent
         hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
+        cursorShape: card.available ? Qt.PointingHandCursor : Qt.ArrowCursor
         onClicked: if (card.available)
             card.chosen()
         onDoubleClicked: if (card.available)

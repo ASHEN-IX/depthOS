@@ -261,7 +261,7 @@ Rectangle {
         id: hoverArea
         anchors.fill: parent
         hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
+        cursorShape: card.available ? Qt.PointingHandCursor : Qt.ArrowCursor
         onClicked: if (card.available)
             card.chosen()
         // Window cards are read-only. A double-click selects; it never activates

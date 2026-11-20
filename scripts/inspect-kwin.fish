@@ -24,8 +24,10 @@ if test "$XDG_SESSION_TYPE" != wayland
     printf 'This POC targets Wayland only.\n' >&2
     set failed 1
 end
-if test (kwin_wayland --version) != 'kwin 6.8.1'
-    printf 'Version outside the audited 6.8.1 target; re-audit before installing.\n' >&2
+set -l supported_versions 'kwin 6.8.1' 'kwin 6.8.2' 'kwin 6.8.3'
+set -l current_ver (kwin_wayland --version 2>/dev/null)
+if not contains -- "$current_ver" $supported_versions
+    printf 'Version outside audited targets (%s). Only KWin 6.8.1, 6.8.2, 6.8.3 are audited; re-audit before installing.\n' "$current_ver" >&2
     set failed 1
 end
 

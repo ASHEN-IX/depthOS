@@ -235,6 +235,7 @@ impl LogicalCommand {
 }
 type Reply<T> = oneshot::Sender<Result<T, ControllerError>>;
 pub(crate) struct SpatialRead {
+    pub shelves: Option<Vec<crate::associations::WindowEvidence>>,
     pub hierarchy: Option<Universe>,
     pub health: ControllerHealth,
     pub changed_context: Option<(ContextReport, ObservedSnapshot)>,

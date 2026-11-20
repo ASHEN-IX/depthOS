@@ -100,7 +100,7 @@ fn hierarchy_persists_across_processes_with_no_desktop_session() {
     );
     let doctor = output(cli(at, &["--db", "test.db", "doctor"]));
     assert_eq!(doctor["healthy"], true);
-    assert_eq!(doctor["database"]["schema_version"], 1);
+    assert_eq!(doctor["database"]["schema_version"], 2);
     assert_eq!(
         fs::metadata(at.join("test.db"))
             .unwrap()

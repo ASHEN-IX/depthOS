@@ -1,6 +1,7 @@
 //! Versioned, same-user read-only UI boundary. No intent authorization is
 //! inferred from UID or bus-name ownership; assignment mutations are absent.
 use crate::{
+    associations::ShelfRow,
     context::{
         Version,
         policy::{Reason, Source, Status, WindowKey},
@@ -69,6 +70,9 @@ struct Page<'a, T> {
 struct Cache {
     hierarchy: Vec<HierarchyRow>,
     context: Vec<ContextRow>,
+    shelves: Option<Vec<ShelfRow>>,
+    shelf_revision: String,
+    shelf_sequence: Option<String>,
     hierarchy_revision: String,
     context_revision: String,
     health: Option<ControllerHealth>,
@@ -81,6 +85,9 @@ impl Default for Cache {
         Self {
             hierarchy: vec![],
             context: vec![],
+            shelves: None,
+            shelf_revision: Uuid::new_v4().to_string(),
+            shelf_sequence: None,
             hierarchy_revision: Uuid::new_v4().to_string(),
             context_revision: Uuid::new_v4().to_string(),
             health: None,
@@ -140,13 +147,19 @@ impl State {
         let _serial = self.refresh.lock().await;
         let cached = self.cache.lock().unwrap().version.clone();
         let read = self.controller.spatial_read(cached.clone()).await.ok();
-        let (logical, health, changed) = match read {
+        let (logical, health, changed, shelves) = match read {
             Some(SpatialRead {
                 hierarchy: tree,
                 health,
                 changed_context,
-            }) => (tree.and_then(hierarchy), Some(health), changed_context),
-            None => (None, None, None),
+                shelves,
+            }) => (
+                tree.and_then(hierarchy),
+                Some(health),
+                changed_context,
+                shelves,
+            ),
+            None => (None, None, None, None),
         };
         let version = health.as_ref().and_then(|h| h.context.as_ref());
         let reuse = cached.is_some() && version == cached.as_ref() && changed.is_none();
@@ -197,6 +210,17 @@ impl State {
             )
         });
         let context_available = reuse || context.is_some();
+        let shelves = shelves
+            .filter(|rows| logical.is_some() && rows.len() <= MAX_ROWS)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|evidence| evidence.row)
+                    .collect::<Vec<_>>()
+            });
+        let shelf_sequence = shelves
+            .as_ref()
+            .and(version)
+            .map(|v| v.observation.sequence.to_string());
         let version = version.filter(|_| context_available).cloned();
         let mut c = self.cache.lock().unwrap();
         let mut mask = 0;
@@ -234,6 +258,12 @@ impl State {
             c.context_revision = Uuid::new_v4().to_string();
             mask |= 2;
         }
+        if c.shelves != shelves || epoch_changed || mask & 1 != 0 {
+            c.shelf_revision = Uuid::new_v4().to_string();
+            mask |= 4;
+        }
+        c.shelves = shelves;
+        c.shelf_sequence = shelf_sequence;
         c.context_available = context_available;
         if !reuse {
             c.context = context.unwrap_or_default();
@@ -310,7 +340,7 @@ impl Endpoint {
         #[zbus(header)] h: Header<'_>,
     ) -> Result<String, Error> {
         authorize(conn, &h).await?;
-        Ok(self.state.envelope("1",true,serde_json::json!({"readOnly":true,"assignmentMutations":false,"selectionOwner":"client","pageSize":PAGE,"maxRows":MAX_ROWS})))
+        Ok(self.state.envelope("1",true,serde_json::json!({"readOnly":true,"assignmentMutations":false,"selectionOwner":"client","pageSize":PAGE,"maxRows":MAX_ROWS,"desktopShelvesVersion":1})))
     }
     async fn get_controller_health(
         &self,
@@ -381,6 +411,43 @@ impl Endpoint {
             c.context_available,
             c.version.as_ref(),
         )
+    }
+    async fn get_desktop_shelves(
+        &self,
+        cursor: u32,
+        expected: &str,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] h: Header<'_>,
+    ) -> Result<String, Error> {
+        authorize(conn, &h).await?;
+        let _permit = self
+            .state
+            .gate
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::LimitsExceeded("Busy".into()))?;
+        self.state.update().await;
+        let c = self.state.cache.lock().unwrap();
+        if expected.len() > 64 || (!expected.is_empty() && expected != c.shelf_revision) {
+            return Err(Error::InvalidArgs("Stale shelf revision".into()));
+        }
+        let rows = c.shelves.as_deref().unwrap_or_default();
+        let cursor = cursor as usize;
+        if cursor > rows.len() || cursor > MAX_ROWS {
+            return Err(Error::InvalidArgs("Invalid cursor".into()));
+        }
+        let end = (cursor + PAGE).min(rows.len());
+        Ok(self.state.envelope(&c.shelf_revision, c.shelves.is_some(), serde_json::json!({
+            "items": &rows[cursor..end],
+            "nextCursor": (end < rows.len()).then_some(end),
+            "hierarchyRevision": c.hierarchy_revision,
+            "lastValidatedSequence": c.shelf_sequence,
+            "freshness": if c.shelves.is_some() { "live" } else if c.health.as_ref()
+                .is_some_and(|h| h.observation == crate::observed::ObservationHealth::Desynchronized) {
+                "stale"
+            } else { "unavailable" },
+            "titlePolicy": "withheld"
+        })))
     }
     async fn get_current_logical_context(
         &self,

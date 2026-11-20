@@ -10,12 +10,16 @@ use rusqlite::{Connection, OpenFlags, Params, Row, Transaction, TransactionBehav
 use uuid::Uuid;
 
 use crate::{
+    associations::{Rule, RuleKind},
     domain::*,
     service::{Change, Store},
 };
 
 const APP_ID: i64 = 0x44505448;
-const MIGRATIONS: &[&str] = &[include_str!("../../migrations/001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../../migrations/001_initial.sql"),
+    include_str!("../../migrations/002_desktop_association_rules.sql"),
+];
 const VERSION: i64 = MIGRATIONS.len() as i64;
 const WORLD_COLUMNS: &str = "id,name,description,sort_order,created_at_ms,updated_at_ms";
 const WORKSPACE_COLUMNS: &str =
@@ -69,6 +73,12 @@ impl SqliteStore {
 
     /// Explicit overrides require an existing, trusted parent directory.
     pub fn open(path: &Path) -> Result<Self> {
+        let mut store = Self::open_writable(path, true)?;
+        migrate(&mut store.connection, MIGRATIONS)?;
+        Ok(store)
+    }
+
+    fn open_writable(path: &Path, create: bool) -> Result<Self> {
         if path.file_name().is_none() {
             return Err(path_error(path, "expected a database filename"));
         }
@@ -86,18 +96,21 @@ impl SqliteStore {
                 "expected a directory writable only by its owner",
             ));
         }
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)
-        {
-            Ok(_) => (),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
-            Err(e) => return Err(path_error(path, e)),
+        if create {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+            {
+                Ok(_) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+                Err(e) => return Err(path_error(path, e)),
+            }
         }
         let metadata = fs::symlink_metadata(path).map_err(|e| path_error(path, e))?;
         if !metadata.is_file()
+            || metadata.uid() != rustix::process::getuid().as_raw()
             || metadata.nlink() != 1
             || metadata.permissions().mode() & 0o077 != 0
         {
@@ -107,11 +120,10 @@ impl SqliteStore {
             ));
         }
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        let mut connection = Connection::open_with_flags(path, flags)?;
+        let connection = Connection::open_with_flags(path, flags)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.pragma_update(None, "trusted_schema", false)?;
-        migrate(&mut connection, MIGRATIONS)?;
         Ok(Self { connection })
     }
 
@@ -130,6 +142,7 @@ impl SqliteStore {
             Err(e) => return Err(path_error(path, e)),
         };
         if !metadata.is_file()
+            || metadata.uid() != rustix::process::getuid().as_raw()
             || metadata.nlink() != 1
             || metadata.permissions().mode() & 0o077 != 0
         {
@@ -150,6 +163,97 @@ impl SqliteStore {
             (APP_ID, _) => Err(Error::SchemaVersion(version)),
             _ => Err(Error::ForeignDatabase),
         }
+    }
+
+    /// Explicit configuration operation. Requires an existing DepthOS database.
+    pub fn configure_association(
+        path: &Path,
+        kind: RuleKind,
+        key: &str,
+        target: Option<(WorkspaceId, Option<DesktopId>)>,
+    ) -> Result<()> {
+        let key = kind
+            .key(key)
+            .ok_or(Error::InvalidMetadata("association key"))?;
+        if target.is_some_and(|(_, desktop)| kind == RuleKind::Application && desktop.is_none()) {
+            return Err(Error::InvalidMetadata("application rule Desktop"));
+        }
+        // Verify the existing file before opening it for writes and migration.
+        drop(Self::open_read_only(path)?);
+        let mut store = Self::open_writable(path, false)?;
+        let tx = store
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        migrate_tx(&tx, MIGRATIONS)?;
+        if let Some((workspace, desktop)) = target {
+            require(&tx, Entity::Workspace, workspace.0)?;
+            if let Some(desktop) = desktop {
+                let valid: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM desktops WHERE workspace_id=?1 AND id=?2)",
+                    params![workspace.0, desktop.0],
+                    |row| row.get(0),
+                )?;
+                if !valid {
+                    return Err(Error::InvalidMetadata(
+                        "association Desktop must belong to the Workspace",
+                    ));
+                }
+            }
+            tx.execute(
+                "INSERT INTO desktop_association_rules(kind,rule_key,workspace_id,desktop_id)
+                 VALUES (?1,?2,?3,?4) ON CONFLICT(kind,rule_key) DO UPDATE SET
+                 workspace_id=excluded.workspace_id,desktop_id=excluded.desktop_id",
+                params![kind.as_str(), key, workspace.0, desktop.map(|id| id.0)],
+            )?;
+        } else {
+            tx.execute(
+                "DELETE FROM desktop_association_rules WHERE kind=?1 AND rule_key=?2",
+                params![kind.as_str(), key],
+            )?;
+        }
+        let count: i64 = tx.query_row(
+            "SELECT count(*) FROM desktop_association_rules",
+            [],
+            |row| row.get(0),
+        )?;
+        if count > 4096 {
+            return Err(Error::InvalidMetadata("association rule limit exceeded"));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn association_view(&self) -> Result<(Universe, Vec<Rule>)> {
+        let tx = self.connection.unchecked_transaction()?;
+        let tree = read_tree(&tx)?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let rules = match version {
+            1 => Vec::new(),
+            VERSION => rows(
+                &tx,
+                "SELECT kind,rule_key,workspace_id,desktop_id FROM desktop_association_rules LIMIT 4097",
+                [],
+                |row| {
+                    let kind = match row.get_ref(0)?.as_str()? {
+                        "native-desktop" => RuleKind::NativeDesktop,
+                        "application" => RuleKind::Application,
+                        _ => return Err(rusqlite::Error::InvalidQuery),
+                    };
+                    Ok(Rule {
+                        kind,
+                        key: row.get(1)?,
+                        workspace: WorkspaceId(row.get(2)?),
+                        desktop: row.get::<_, Option<Uuid>>(3)?.map(DesktopId),
+                    })
+                },
+            )?,
+            _ => return Err(Error::SchemaVersion(version)),
+        };
+        if rules.len() > 4096 {
+            return Err(Error::InvalidMetadata("association rule limit exceeded"));
+        }
+        tx.commit()?;
+        Ok((tree, rules))
     }
 
     pub fn doctor(&self) -> Result<Doctor> {
@@ -464,49 +568,54 @@ impl Store for SqliteStore {
 
     fn tree(&self) -> Result<Universe> {
         let tx = self.connection.unchecked_transaction()?;
-        let mut desktops = HashMap::<WorkspaceId, Vec<_>>::new();
-        for desktop in rows(
-            &tx,
-            &format!("SELECT {DESKTOP_COLUMNS} FROM desktops ORDER BY workspace_id,sort_order,id"),
-            [],
-            desktop,
-        )? {
-            desktops
-                .entry(desktop.workspace_id)
-                .or_default()
-                .push(desktop);
-        }
-        let mut workspaces = HashMap::<WorldId, Vec<_>>::new();
-        for workspace in rows(
-            &tx,
-            &format!("SELECT {WORKSPACE_COLUMNS} FROM workspaces ORDER BY world_id,sort_order,id"),
-            [],
-            workspace,
-        )? {
-            let desktops = desktops.remove(&workspace.id).unwrap_or_default();
-            workspaces
-                .entry(workspace.world_id)
-                .or_default()
-                .push(WorkspaceBranch {
-                    workspace,
-                    desktops,
-                });
-        }
-        let worlds = rows(
-            &tx,
-            &format!("SELECT {WORLD_COLUMNS} FROM worlds ORDER BY sort_order,id"),
-            [],
-            world,
-        )?
-        .into_iter()
-        .map(|world| WorldBranch {
-            workspaces: workspaces.remove(&world.id).unwrap_or_default(),
-            world,
-        })
-        .collect();
+        let tree = read_tree(&tx)?;
         tx.commit()?;
-        Ok(Universe { worlds })
+        Ok(tree)
     }
+}
+
+fn read_tree(tx: &Transaction<'_>) -> Result<Universe> {
+    let mut desktops = HashMap::<WorkspaceId, Vec<_>>::new();
+    for desktop in rows(
+        tx,
+        &format!("SELECT {DESKTOP_COLUMNS} FROM desktops ORDER BY workspace_id,sort_order,id"),
+        [],
+        desktop,
+    )? {
+        desktops
+            .entry(desktop.workspace_id)
+            .or_default()
+            .push(desktop);
+    }
+    let mut workspaces = HashMap::<WorldId, Vec<_>>::new();
+    for workspace in rows(
+        tx,
+        &format!("SELECT {WORKSPACE_COLUMNS} FROM workspaces ORDER BY world_id,sort_order,id"),
+        [],
+        workspace,
+    )? {
+        let desktops = desktops.remove(&workspace.id).unwrap_or_default();
+        workspaces
+            .entry(workspace.world_id)
+            .or_default()
+            .push(WorkspaceBranch {
+                workspace,
+                desktops,
+            });
+    }
+    let worlds = rows(
+        tx,
+        &format!("SELECT {WORLD_COLUMNS} FROM worlds ORDER BY sort_order,id"),
+        [],
+        world,
+    )?
+    .into_iter()
+    .map(|world| WorldBranch {
+        workspaces: workspaces.remove(&world.id).unwrap_or_default(),
+        world,
+    })
+    .collect();
+    Ok(Universe { worlds })
 }
 
 pub mod init;

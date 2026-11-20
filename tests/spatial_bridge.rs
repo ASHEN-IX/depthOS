@@ -133,6 +133,7 @@ async fn schema_paging_invalidation_limits_conflict_and_shutdown() {
             "GetContextReport",
             "GetControllerHealth",
             "GetCurrentLogicalContext",
+            "GetDesktopShelves",
             "GetHierarchy",
         ]
     );
@@ -165,7 +166,8 @@ async fn call_owner(c: &Connection) -> zbus::fdo::Result<zbus::names::OwnedUniqu
 async fn redacted_native_context_stale_assignments_and_owner_loss() {
     let bus = PrivateBus::start();
     let tmp = tempfile::tempdir().unwrap();
-    let c = controller(&bus, &tmp.path().join("db"));
+    let db = tmp.path().join("db");
+    let c = controller(&bus, &db);
     let bridge = UiBridge::at_address(c.clone(), &bus.address).await.unwrap();
     let conn = client(&bus).await;
     let p = Proxy::new(&conn, SERVICE, PATH, INTERFACE).await.unwrap();
@@ -244,6 +246,52 @@ async fn redacted_native_context_stale_assignments_and_owner_loss() {
         page(&p, "GetContextReport", 0, "").await["data"]["items"][0]["status"],
         "confirmed"
     );
+    use depthos_core::associations::RuleKind;
+    let shelves = page(&p, "GetDesktopShelves", 0, "").await;
+    assert_eq!(shelves["data"]["freshness"], "live");
+    assert_eq!(shelves["data"]["titlePolicy"], "withheld");
+    let entry = &shelves["data"]["items"][0];
+    assert_eq!(entry["workspaceId"], json!(target));
+    assert!(entry["desktopId"].is_null());
+    let window_id = entry["id"].clone();
+    let LogicalReply::DesktopCreated(desktop) = c
+        .logical(LogicalCommand::CreateDesktop(
+            target,
+            "Logical".into(),
+            None,
+        ))
+        .await
+        .unwrap()
+    else {
+        panic!("logical desktop")
+    };
+    SqliteStore::configure_association(
+        &db,
+        RuleKind::Application,
+        "org.example.Editor",
+        Some((target, Some(desktop))),
+    )
+    .unwrap();
+    let shelves = page(&p, "GetDesktopShelves", 0, "").await;
+    let entry = &shelves["data"]["items"][0];
+    assert_eq!(entry["desktopId"], json!(desktop));
+    assert_eq!(entry["assignment"], "explicit");
+    assert_eq!(entry["id"], window_id);
+    assert_eq!(entry.as_object().unwrap().len(), 6);
+    assert!(!shelves.to_string().contains("Sanitized editor"));
+    assert!(!shelves.to_string().contains("test-session"));
+    c.logical(LogicalCommand::DeleteDesktop(desktop))
+        .await
+        .unwrap();
+    assert!(
+        p.call::<_, _, String>(
+            "GetDesktopShelves",
+            &(0_u32, shelves["revision"].as_str().unwrap())
+        )
+        .await
+        .is_err()
+    );
+    assert!(page(&p, "GetDesktopShelves", 0, "").await["data"]["items"][0]["desktopId"].is_null());
     c.logical(LogicalCommand::DeleteWorkspace(target))
         .await
         .unwrap();
@@ -253,6 +301,10 @@ async fn redacted_native_context_stale_assignments_and_owner_loss() {
     );
     // An ineligible duplicate is still an ambiguous native identity. A warm
     // context cache must revoke the previous UUID mapping when it appears.
+    assert_eq!(
+        page(&p, "GetDesktopShelves", 0, "").await["data"]["items"],
+        json!([])
+    );
     let current = page(&p, "GetContextReport", 0, "").await;
     let old_revision = current["revision"].as_str().unwrap();
     let old_item = &current["data"]["items"][0];

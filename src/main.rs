@@ -7,6 +7,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use depthos_core::{
     application::Application,
+    associations::RuleKind,
     domain::{DesktopId, Error, Result, WorkspaceId, WorldId},
     observed::ObservedStateSource,
     sqlite::{
@@ -37,6 +38,9 @@ enum Command {
     Workspace(WorkspaceCommand),
     #[command(subcommand)]
     Desktop(DesktopCommand),
+    /// Configure a logical-only association rule in an existing SQLite database.
+    #[command(subcommand)]
+    Association(AssociationCommand),
     /// Print the complete logical hierarchy as JSON. Strictly read-only: never
     /// creates, migrates or repairs a database (run `depthos init` first).
     Tree,
@@ -64,6 +68,26 @@ enum Command {
     Controller(ControllerCommand),
     /// Launch the standalone Spatial Workspace Alpha UI.
     Ui(UiCommand),
+}
+
+#[derive(Subcommand)]
+enum AssociationCommand {
+    /// Set a native Desktop mapping or a Workspace-scoped application rule.
+    Set {
+        #[arg(value_enum)]
+        kind: RuleKind,
+        key: String,
+        #[arg(long)]
+        workspace: WorkspaceId,
+        #[arg(long)]
+        desktop: Option<DesktopId>,
+    },
+    /// Remove a configured association rule.
+    Remove {
+        #[arg(value_enum)]
+        kind: RuleKind,
+        key: String,
+    },
 }
 
 #[derive(clap::Args, Clone, Debug)]
@@ -255,6 +279,19 @@ fn command_is_read_only(command: &Command) -> bool {
 }
 
 fn run(cli: Cli) -> Result<bool> {
+    if let Command::Association(command) = &cli.command {
+        let (kind, key, target) = match command {
+            AssociationCommand::Set {
+                kind,
+                key,
+                workspace,
+                desktop,
+            } => (*kind, key, Some((*workspace, *desktop))),
+            AssociationCommand::Remove { kind, key } => (*kind, key, None),
+        };
+        SqliteStore::configure_association(&database_path(&cli)?, kind, key, target)?;
+        return Ok(true);
+    }
     let store = if command_is_read_only(&cli.command) {
         // Reads must not create, migrate, or repair. `depthos init` is the
         // only implicit-path creator, and only when the user asks for it.
@@ -311,6 +348,7 @@ fn run(cli: Cli) -> Result<bool> {
         },
         Command::Tree => json(service.tree()?)?,
         Command::Doctor
+        | Command::Association(_)
         | Command::Init { .. }
         | Command::Status { .. }
         | Command::System(_)
@@ -538,11 +576,11 @@ async fn run_controller(
     timeout: Option<u64>,
 ) -> std::result::Result<(), String> {
     use depthos_core::controller::{Controller, ControllerOptions, Lifecycle, RecoveryReason};
-    let store = match database {
-        Some(path) => SqliteStore::open(path),
-        None => SqliteStore::open_default(),
-    }
-    .map_err(|_| "Could not open logical workspace database".to_owned())?;
+    let path = database
+        .cloned()
+        .map_or_else(default_path, Ok)
+        .map_err(|err| err.to_string())?;
+    let store = SqliteStore::open_read_only(&path).map_err(|err| err.to_string())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|_| "Could not register shutdown signal".to_owned())?;
     let controller = Controller::start(store, ControllerOptions::default())

@@ -28,6 +28,7 @@ EXACT_ALLOWED_METHODS = {
     "get_hierarchy",
     "get_context_report",
     "get_current_logical_context",
+    "get_desktop_shelves",
 }
 
 EXACT_ALLOWED_SIGNALS = {
@@ -94,7 +95,7 @@ def test_dbus_read_only_methods():
                 f"Forbidden mutative or authorization method '{method}' exported on production D-Bus!"
             )
 
-    print("PASS: org.depthos.Controller1 exports exactly the 5 approved read-only inspection methods and 1 invalidation signal.")
+    print("PASS: org.depthos.Controller1 exports exactly the 6 approved read-only inspection methods and 1 invalidation signal.")
 
 
 def test_security_boundary_integration():

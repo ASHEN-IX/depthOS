@@ -66,6 +66,25 @@ LevelTransition {
                 detail: "Read-only application metadata for the selected desktop"
             }
 
+            Row {
+                spacing: 8
+                NeonButton {
+                    objectName: "createDesktopButton"
+                    text: "+ New Desktop"
+                    compact: true
+                    highlighted: true
+                    accent: NeonTheme.cyan
+                    onClicked: view.scene.openCreateDesktopDialog(view.scene.backend ? view.scene.backend.selectedWorkspaceId : "")
+                }
+                NeonButton {
+                    objectName: "editDesktopButton"
+                    text: "Edit Desktop"
+                    compact: true
+                    visible: !!view.desktop
+                    onClicked: view.scene.openEditDesktopDialog(view.desktop)
+                }
+            }
+
             Flow {
                 id: selector
                 width: parent.width

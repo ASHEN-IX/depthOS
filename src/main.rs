@@ -404,17 +404,27 @@ fn run_init(cli: &Cli, default_hierarchy: bool) -> Result<()> {
 }
 
 fn command_is_read_only(command: &Command) -> bool {
-    matches!(
-        command,
+    match command {
         Command::Tree
-            | Command::Doctor
-            | Command::World(WorldCommand::List { .. })
-            | Command::Workspace(WorkspaceCommand::List { .. })
-            | Command::Desktop(DesktopCommand::List { .. })
-            | Command::Preferences(PreferencesCommand::Get { .. } | PreferencesCommand::List)
-            | Command::Project(ProjectCommand::Inspect { .. })
-            | Command::Archived(ArchivedCommand::List)
-    )
+        | Command::Doctor
+        | Command::World(WorldCommand::List { .. })
+        | Command::Workspace(WorkspaceCommand::List { .. })
+        | Command::Desktop(DesktopCommand::List { .. })
+        | Command::Preferences(PreferencesCommand::Get { .. } | PreferencesCommand::List)
+        | Command::Project(ProjectCommand::Inspect { .. })
+        | Command::Archived(ArchivedCommand::List) => true,
+        Command::Manage(ManageCommand::Exec { request }) => {
+            let action = request
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .and_then(|v| v["action"].as_str().map(String::from));
+            matches!(
+                action.as_deref(),
+                Some("getPreferences" | "getArchived" | "getAssociationImpact")
+            )
+        }
+        _ => false,
+    }
 }
 
 fn run(cli: Cli) -> Result<bool> {

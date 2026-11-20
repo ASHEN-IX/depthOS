@@ -39,6 +39,25 @@ LevelTransition {
                 detail: Display.countLabel(view.scene.currentWorkspaces.length, "workspace", "workspaces") + " in this world"
             }
 
+            Row {
+                spacing: 8
+                NeonButton {
+                    objectName: "createWorkspaceButton"
+                    text: "+ New Workspace"
+                    compact: true
+                    highlighted: true
+                    accent: NeonTheme.cyan
+                    onClicked: view.scene.openCreateWorkspaceDialog(view.scene.backend ? view.scene.backend.selectedWorldId : "")
+                }
+                NeonButton {
+                    objectName: "editWorkspaceButton"
+                    text: "Edit Workspace"
+                    compact: true
+                    visible: !!view.activeWorkspace
+                    onClicked: view.scene.openEditWorkspaceDialog(view.activeWorkspace)
+                }
+            }
+
             Rectangle {
                 width: parent.width
                 height: view.height < 570 ? 74 : 135

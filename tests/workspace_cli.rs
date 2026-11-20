@@ -271,7 +271,15 @@ fn phase_4_4_cli_crud_archival_and_preferences() {
     // 5. Archive desktop
     let _ = output(cli(
         at,
-        &["--db", "p44.db", "desktop", "archive", dt_id, "--version", "1"],
+        &[
+            "--db",
+            "p44.db",
+            "desktop",
+            "archive",
+            dt_id,
+            "--version",
+            "1",
+        ],
     ));
     let dt_active = output(cli(
         at,
@@ -296,7 +304,15 @@ fn phase_4_4_cli_crud_archival_and_preferences() {
     // 6. Restore desktop
     let _ = output(cli(
         at,
-        &["--db", "p44.db", "desktop", "restore", dt_id, "--version", "2"],
+        &[
+            "--db",
+            "p44.db",
+            "desktop",
+            "restore",
+            dt_id,
+            "--version",
+            "2",
+        ],
     ));
     let dt_restored = output(cli(
         at,
@@ -329,7 +345,7 @@ fn phase_4_4_cli_crud_archival_and_preferences() {
     assert_eq!(pref["value"], "true");
 
     let all_prefs = output(cli(at, &["--db", "p44.db", "preferences", "list"]));
-    assert!(all_prefs.as_array().unwrap().len() >= 1);
+    assert!(!all_prefs.as_array().unwrap().is_empty());
 
     // 8. Project inspection CLI
     let inspection = output(cli(at, &["project", "inspect", at.to_str().unwrap()]));

@@ -38,6 +38,38 @@ LevelTransition {
         detail: "Your spatial spaces for work, life, and exploration."
     }
 
+    Row {
+        id: worldActionsRow
+        x: heading.x
+        y: heading.y + heading.height + (view.compact ? 4 : 8)
+        spacing: 8
+        z: 10
+
+        NeonButton {
+            objectName: "createWorldButton"
+            text: "+ New World"
+            compact: true
+            highlighted: true
+            accent: NeonTheme.cyan
+            onClicked: view.scene.openCreateWorldDialog()
+        }
+
+        NeonButton {
+            objectName: "editWorldButton"
+            text: "Edit World"
+            compact: true
+            visible: !!view.selectedWorld
+            onClicked: view.scene.openEditWorldDialog(view.selectedWorld)
+        }
+
+        NeonButton {
+            objectName: "archivedItemsButton"
+            text: "Archived Items"
+            compact: true
+            onClicked: view.scene.openArchivedView()
+        }
+    }
+
     NeonText {
         objectName: "emptyHierarchyHint"
         anchors.centerIn: parent

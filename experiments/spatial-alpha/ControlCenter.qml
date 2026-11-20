@@ -165,7 +165,10 @@ FocusScope {
                     checked: overlay.scene.reducedMotion
                     highlighted: checked
                     text: "Reduced motion · " + (checked ? "On" : "Off")
-                    onClicked: overlay.scene.reducedMotion = checked
+                    onClicked: {
+                        overlay.scene.reducedMotion = checked;
+                        overlay.scene.savePreference("presentation.reduced_motion", checked ? "true" : "false");
+                    }
                 }
                 NeonButton {
                     objectName: "lowEffectsToggle"
@@ -174,7 +177,10 @@ FocusScope {
                     checked: overlay.scene.lowEffects
                     highlighted: checked
                     text: "Effects quality · " + (checked ? "Low" : "Standard")
-                    onClicked: overlay.scene.lowEffects = checked
+                    onClicked: {
+                        overlay.scene.lowEffects = checked;
+                        overlay.scene.savePreference("presentation.low_effects", checked ? "true" : "false");
+                    }
                 }
                 NeonButton {
                     objectName: "highContrastToggle"
@@ -183,7 +189,10 @@ FocusScope {
                     checked: overlay.scene.highContrast
                     highlighted: checked
                     text: "High contrast · " + (checked ? "On" : "Off")
-                    onClicked: overlay.scene.highContrast = checked
+                    onClicked: {
+                        overlay.scene.highContrast = checked;
+                        overlay.scene.savePreference("presentation.high_contrast", checked ? "true" : "false");
+                    }
                 }
                 NeonButton {
                     objectName: "showTitlesToggle"
@@ -192,7 +201,24 @@ FocusScope {
                     checked: overlay.scene.showTitles
                     highlighted: checked
                     text: "Window titles · " + (checked ? "Revealed" : "Hidden")
-                    onClicked: overlay.scene.showTitles = checked
+                    onClicked: {
+                        overlay.scene.showTitles = checked;
+                        overlay.scene.savePreference("presentation.show_titles", checked ? "true" : "false");
+                    }
+                }
+
+                Rectangle { width: parent.width; height: 1; color: NeonTheme.border }
+                NeonLabel { text: "STORAGE & RECOVERY" }
+
+                NeonButton {
+                    objectName: "controlCenterArchivedButton"
+                    width: parent.width
+                    text: "View Archived Items"
+                    compact: true
+                    onClicked: {
+                        overlay.dismissed();
+                        overlay.scene.openArchivedView();
+                    }
                 }
 
                 Rectangle { width: parent.width; height: 1; color: NeonTheme.border }

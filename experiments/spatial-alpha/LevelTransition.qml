@@ -2,7 +2,7 @@ import QtQuick
 import "theme"
 
 Item {
-    id: layer
+    id: transitionLayer
     property bool activeLevel: false
     property bool motionOff: false
     property int direction: 1
@@ -16,7 +16,7 @@ Item {
     // already final when the animation starts, including interrupted entrances.
     onActiveLevelChanged: {
         entrance.stop();
-        layer.scale = 1;
+        transitionLayer.scale = 1;
         if (activeLevel && !motionOff)
             entrance.restart();
     }
@@ -30,16 +30,16 @@ Item {
 
     Behavior on opacity {
         NumberAnimation {
-            duration: NeonTheme.ms(layer.motionOff, NeonTheme.zoomMs)
+            duration: NeonTheme.ms(transitionLayer.motionOff, NeonTheme.zoomMs)
             easing.type: Easing.OutQuad
         }
     }
 
     NumberAnimation {
         id: entrance
-        target: layer
+        target: transitionLayer
         property: "scale"
-        from: layer.direction > 0 ? 0.91 : 1.065
+        from: transitionLayer.direction > 0 ? 0.91 : 1.065
         to: 1
         duration: NeonTheme.zoomMs
         easing.type: Easing.OutQuad

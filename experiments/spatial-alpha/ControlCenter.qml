@@ -25,6 +25,12 @@ FocusScope {
         }
     }
 
+    Connections {
+        target: overlay.Window.window
+        enabled: overlay.isOpen
+        function onActiveFocusItemChanged() { viewport.revealFocusedControl(); }
+    }
+
     Rectangle {
         anchors.fill: parent
         color: NeonTheme.scrim
@@ -54,9 +60,26 @@ FocusScope {
         }
 
         Flickable {
+            id: viewport
+            objectName: "controlCenterViewport"
             anchors.fill: parent
             contentHeight: content.implicitHeight + 42
             boundsBehavior: Flickable.StopAtBounds
+            clip: true
+            onHeightChanged: revealFocusedControl()
+
+            function revealFocusedControl() {
+                const window = overlay.Window.window;
+                const item = window ? window.activeFocusItem : null;
+                if (!overlay.isOpen || !overlay.scene.itemInside(item, viewport.contentItem))
+                    return;
+                const top = item.mapToItem(viewport.contentItem, 0, 0).y;
+                const bottom = top + item.height;
+                if (top - 8 < contentY)
+                    contentY = Math.max(0, top - 8);
+                else if (bottom + 8 > contentY + height)
+                    contentY = Math.min(Math.max(0, contentHeight - height), bottom + 8 - height);
+            }
 
             Column {
                 id: content

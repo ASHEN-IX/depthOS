@@ -11,9 +11,12 @@ LevelTransition {
     readonly property real cardWidth: Math.min(420, Math.max(205, width * 0.33))
     readonly property real cardHeight: Math.min(332, Math.max(212, height * 0.49))
     readonly property real spacing: Math.min(width * 0.285, cardWidth * 0.99)
-    readonly property real heroCenter: height * 0.5
+    readonly property real heroHalfHeight: cardHeight * NeonTheme.selectedScale / 2
+    readonly property real heroCenter: Math.max(height * 0.5, heading.y + heading.height + heroHalfHeight + 16)
 
     SceneHeading {
+        id: heading
+        objectName: "worldsHeading"
         x: view.margin
         y: Math.max(10, view.height * 0.043)
         width: view.width - 2 * x
@@ -122,7 +125,7 @@ LevelTransition {
         radius: NeonTheme.cardRadius
         color: view.scene.highContrast ? NeonTheme.contrastPanel : NeonTheme.shell
         border.color: view.scene.highContrast ? NeonTheme.muted : NeonTheme.border
-        visible: !!view.selectedWorld && view.height >= 430
+        visible: !!view.selectedWorld && y >= view.heroCenter + view.heroHalfHeight + 12
         z: 10
 
         Rectangle {

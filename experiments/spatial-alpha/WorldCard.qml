@@ -25,7 +25,7 @@ CyberCard {
         x: 2
         y: 2
         width: card.width - 4
-        height: card.height * 0.58
+        height: Math.min(card.height * 0.58, Math.max(0, card.height - details.implicitHeight - 26))
 
         Rectangle {
             anchors.fill: parent
@@ -44,7 +44,7 @@ CyberCard {
         WorldInsignia {
             anchors.centerIn: parent
             width: parent.width - 20
-            height: parent.height - 2
+            height: Math.max(0, parent.height - 2)
             ink: card.cameraFocused ? NeonTheme.emerald : card.identityTone
             variant: card.identityIndex
             simple: card.lowEffects || card.highContrast
@@ -77,6 +77,7 @@ CyberCard {
     }
 
     Column {
+        id: details
         x: 18
         y: art.height + 14
         width: card.width - 36
@@ -101,6 +102,7 @@ CyberCard {
         }
 
         Flow {
+            objectName: "worldCardCounts"
             width: parent.width
             spacing: 6
             topPadding: 2

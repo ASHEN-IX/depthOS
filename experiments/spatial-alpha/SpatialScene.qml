@@ -231,19 +231,24 @@ Item {
         scene.cameraY = scene.clampPan(scene.cameraY + dy, scene.panLimitY());
     }
 
-    // angle* are in eighths of a degree (120 = one notch). pixel* are device
-    // pixels from the same Qt wheel event. When pixelDelta is non-zero it
-    // already describes that event, so angleDelta is ignored.
-    function handleWheel(angleX, angleY, pixelX, pixelY, modifiers) {
+    // angle* are in eighths of a degree (120 = one notch). Each event uses
+    // either its wheel steps or its pixel deltas.
+    function handleWheel(angleX, angleY, pixelX, pixelY, modifiers, phase, deviceType) {
         if (scene.navigationBlocked())
             return;
         scene.wheelEventsHandled += 1;
         const mod = modifiers || 0;
-        const hasPixel = pixelX !== 0 || pixelY !== 0;
-        let dx = hasPixel ? pixelX : (angleX / 120) * scene.wheelStepPx;
-        let dy = hasPixel ? pixelY : (angleY / 120) * scene.wheelStepPx;
+        const angle = Math.max(Math.abs(angleX), Math.abs(angleY));
+        const pixel = Math.max(Math.abs(pixelX), Math.abs(pixelY));
+        // Wayland can deliver an unphased wheel notch with both angular units
+        // and a pixel fallback (120 and 15 in the virtual KWin session).
+        const preferSteps = scene.currentLevel === 1 && phase === Qt.NoScrollPhase && angle > 0
+            && (deviceType === PointerDevice.Mouse || pixel === Math.round(angle / 8));
+        const usePixels = pixel !== 0 && !preferSteps;
+        let dx = usePixels ? pixelX : (angleX / 120) * scene.wheelStepPx;
+        let dy = usePixels ? pixelY : (angleY / 120) * scene.wheelStepPx;
         if (mod & Qt.ControlModifier) {
-            const delta = hasPixel ? (pixelY !== 0 ? pixelY : pixelX) : (angleY !== 0 ? angleY : angleX);
+            const delta = usePixels ? (pixelY !== 0 ? pixelY : pixelX) : (angleY !== 0 ? angleY : angleX);
             if (delta > 0)
                 scene.stepHierarchy(1);
             else if (delta < 0)
@@ -975,14 +980,17 @@ Item {
         }
     }
 
-    // One handler, so a single Qt wheel event cannot be applied twice.
-    WheelHandler {
-        id: wheelHandler
-        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+    // One wheel area consumes both axes in the same event. Button presses
+    // continue to the cards, including the native double-click sequence.
+    MouseArea {
+        anchors.fill: parent
+        z: 11
+        acceptedButtons: Qt.NoButton
+        scrollGestureEnabled: true
         enabled: !searchPalette.isOpen && !controlCenter.isOpen && !scene.onboardingOpen()
-        target: null
         onWheel: event => {
-            scene.handleWheel(event.angleDelta.x, event.angleDelta.y, event.pixelDelta.x, event.pixelDelta.y, event.modifiers);
+            scene.handleWheel(event.angleDelta.x, event.angleDelta.y, event.pixelDelta.x, event.pixelDelta.y,
+                event.modifiers, event.phase, event.device ? event.device.type : PointerDevice.Unknown);
         }
     }
 

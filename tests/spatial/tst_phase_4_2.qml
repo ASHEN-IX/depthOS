@@ -57,6 +57,40 @@ Item {
             compare(scene.worldIndex, 0);
         }
 
+        function test_wayland_discrete_wheel_with_pixel_fallback_browses_once() {
+            scene.handleWheel(0, -120, 0, -15, 0, Qt.NoScrollPhase, PointerDevice.TouchPad);
+            compare(scene.worldIndex, 1);
+            scene.handleWheel(0, -420, 0, -35, 0, Qt.NoScrollPhase, PointerDevice.TouchPad);
+            compare(scene.worldIndex, 1);
+            scene.handleWheel(0, -420, 0, -35, 0, Qt.NoScrollPhase, PointerDevice.TouchPad);
+            compare(scene.worldIndex, 2);
+        }
+
+        function test_horizontal_wheel_reaches_carousel_once() {
+            const before = scene.wheelEventsHandled;
+            mouseWheel(scene, 550, 450, -120, 0);
+            compare(scene.worldIndex, 1);
+            compare(scene.wheelEventsHandled, before + 1);
+        }
+
+        function test_header_short_labels_fit_their_buttons() {
+            for (const name of ["searchButton", "controlCenterButton"]) {
+                const button = findChild(scene, name);
+                verify(button !== null);
+                tryCompare(button.contentItem, "truncated", false);
+            }
+        }
+
+        function test_short_worlds_view_keeps_heading_and_card_counts_visible() {
+            root.width = 630;
+            root.height = 470;
+            const heading = findChild(scene, "worldsHeading");
+            const card = findChild(scene, "worldCard-world-engineering");
+            const counts = findChild(card, "worldCardCounts");
+            tryVerify(() => card.mapToItem(scene, 0, 0).y >= heading.mapToItem(scene, 0, heading.height).y + 8);
+            verify(counts.mapToItem(card, 0, counts.height).y <= card.height - 8);
+        }
+
         function test_workspace_rows_follow_viewport_columns() {
             const base = backend.currentWorkspace;
             backend.workspaces = backend.workspaces.concat(
@@ -113,6 +147,25 @@ Item {
             verify(scene.activeFocus);
             compare(backend.sourceKind, source);
             compare(backend.selectedWorldId, selected);
+        }
+
+        function test_narrow_control_center_keeps_keyboard_focused_toggle_visible() {
+            root.width = 630;
+            root.height = 470;
+            keyClick(Qt.Key_F2);
+            const center = findChild(scene, "controlCenter");
+            const viewport = findChild(center, "controlCenterViewport");
+            for (const name of ["lowEffectsToggle", "highContrastToggle", "showTitlesToggle"]) {
+                keyClick(Qt.Key_Tab);
+                const toggle = findChild(center, name);
+                tryCompare(toggle, "activeFocus", true);
+                verify(toggle.mapToItem(viewport, 0, 0).y >= 0);
+                verify(toggle.mapToItem(viewport, 0, toggle.height).y <= viewport.height);
+            }
+            keyClick(Qt.Key_Tab, Qt.ShiftModifier);
+            tryCompare(findChild(center, "highContrastToggle"), "activeFocus", true);
+            keyClick(Qt.Key_Escape);
+            verify(scene.activeFocus);
         }
 
         function test_privacy_rendering_strips_control_codes_and_protects_identity() {

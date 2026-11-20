@@ -6,7 +6,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import tempfile
@@ -15,24 +14,39 @@ import traceback
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-ARTIFACTS = ROOT / "artifacts/phase-4-3"
+sys.path.insert(0, str(ROOT / "tests/support"))
+from private_session import SOCKET, PrivateKWin, guard, launch, mark, observer_package
+from host_isolation_monitor import HostMonitor
+
+ARTIFACTS = ROOT / "artifacts/phase-4-3-1"
 LAUNCHER = ROOT / "tools/depthos-spatial-alpha"
 OBSERVER = ROOT / "experiments/kwin-observer/contents/code/main.js"
+FIXTURE_ID = "org.depthos.phase431"
+FIXTURE = """
+import sys
+from PyQt6.QtWidgets import QApplication, QLabel
+app = QApplication([])
+app.setDesktopFileName(sys.argv[1])
+window = QLabel("Disposable DepthOS fixture")
+window.setWindowTitle("Disposable DepthOS fixture")
+window.resize(360, 240)
+window.show()
+app.exec()
+"""
 
 
 def run_isolated(results, restart):
+    bus = guard(results)
     import dbus
     from PyQt6 import QtQml
     from PyQt6.QtCore import QTimer
     from PyQt6.QtGui import QGuiApplication
     from PyQt6.QtQuick import QQuickWindow
 
-    assert Path(os.environ["XDG_RUNTIME_DIR"]).resolve() == results / "runtime"
-    assert Path(os.environ["HOME"]).resolve() == results / "home"
-    bus = dbus.SessionBus()
     assert set(bus.list_names()) - {"org.freedesktop.DBus", bus.get_unique_name()} == set()
-    daemon = dbus.Interface(bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus"),
-                            "org.freedesktop.DBus")
+    install_root = results / "data/kwin/scripts"
+    installed = None
+    private = None
     children = []
 
     def process(name, *command):
@@ -61,78 +75,112 @@ def run_isolated(results, restart):
                                 "--name", label))["id"] for label in ("Development", "Review")]
         return workspace, desks
 
+    def checkpoint(stage, **details):
+        identity = private.report() if private is not None and private.process.poll() is None else {}
+        mark(results, stage, **identity, **details)
+
+    def package(action):
+        nonlocal installed
+        checkpoint(f"package-{action}:before", package_root=str(install_root))
+        path = observer_package(results, action, OBSERVER.parents[2], install_root)
+        installed = path if action == "install" else None
+        checkpoint(f"package-{action}:after", package_root=str(install_root))
+
     def load_script(path, name):
-        number = int(bus.call_blocking("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting",
-                                       "loadScript", "ss", (str(path), name), timeout=5))
+        assert path.resolve().is_relative_to(results) and path.is_file()
+        checkpoint("script-load:before", script=name)
+        number = int(private.call("/Scripting", "org.kde.kwin.Scripting",
+                                  "loadScript", "ss", (str(path), name)))
         assert number >= 0
-        script = dbus.Interface(bus.get_object("org.kde.KWin", f"/Scripting/Script{number}"),
-                                "org.kde.kwin.Script")
-        script.run(timeout=5)
+        private.call(f"/Scripting/Script{number}", "org.kde.kwin.Script", "run", "", ())
+        checkpoint("script-load:after", script=name)
         return name
 
     def unload(name):
-        return dbus.Interface(bus.get_object("org.kde.KWin", "/Scripting"),
-                              "org.kde.kwin.Scripting").unloadScript(name)
+        checkpoint("script-unload:before", script=name)
+        removed = private.call("/Scripting", "org.kde.kwin.Scripting", "unloadScript", "s", (name,))
+        checkpoint("script-unload:after", script=name)
+        return removed
 
     def move_fixture(target, pid, native_desktops, protection=None):
-        # This script can only target the Konsole process spawned inside this
+        # This script can only target the Qt fixture process spawned inside this
         # run. It is never installed and never connects to the host bus.
-        assert int(daemon.GetConnectionUnixProcessID("org.kde.KWin")) == kwin.pid
-        params = json.dumps({"pid": pid, "desktops": native_desktops, "protection": protection})
+        private.verify()
+        params = json.dumps({"pid": pid, "desktops": native_desktops, "protection": protection,
+                             "application": FIXTURE_ID})
         target.write_text("""
 const p = PARAMS;
 const found = workspace.stackingOrder.filter(w => w.pid === p.pid &&
-                                                    w.desktopFileName === "org.kde.konsole");
+                                                    w.desktopFileName === p.application);
 if (found.length !== 1) throw new Error("Disposable fixture missing");
 if (p.protection === null)
     found[0].desktops = workspace.desktops.filter(d => p.desktops.includes(d.id));
 else
     found[0].excludeFromCapture = p.protection;
 """.replace("PARAMS", params))
+        checkpoint("fixture-change:before", fixture_pid=pid, script=target.stem)
         unload(load_script(target, target.stem))
+        checkpoint("fixture-change:after", fixture_pid=pid, script=target.stem)
 
     def compositor(label):
-        kwin = process(label, "kwin_wayland", "--virtual", "--no-lockscreen", "--width", "1600",
-                       "--height", "1000", "--socket", os.environ["WAYLAND_DISPLAY"])
-        wait(lambda: bus.name_has_owner("org.kde.KWin") and
-             (results / "runtime" / os.environ["WAYLAND_DISPLAY"]).exists())
-        assert int(daemon.GetConnectionUnixProcessID("org.kde.KWin")) == kwin.pid
+        nonlocal private
+        private = None
+        checkpoint(f"{label}:before")
+        socket = results / "runtime" / SOCKET
+        assert not socket.exists() and not socket.is_symlink()
+        kwin = process(label, "/usr/bin/kwin_wayland", "--virtual", "--no-lockscreen",
+                       "--no-global-shortcuts", "--width", "1600",
+                       "--height", "1000", "--socket", SOCKET)
+        wait(lambda: kwin.poll() is not None or (bus.name_has_owner("org.kde.KWin") and socket.is_socket()))
+        assert kwin.poll() is None, "Private KWin failed to start"
+        private = PrivateKWin(results, bus, kwin)
+        checkpoint(f"{label}:after")
         return kwin
 
     try:
         ids = [str(uuid.uuid4()), str(uuid.uuid4())]
         (results / "config/kwinrc").write_text(
-            f"[Desktops]\nNumber=2\nId_1={ids[0]}\nId_2={ids[1]}\n")
+            f"[Desktops]\nNumber=2\nId_1={ids[0]}\nId_2={ids[1]}\n"
+            "[Plugins]\nkwin4_effect_shapecornersEnabled=false\n")
         kwin = compositor("kwin")
-        properties = dbus.Interface(bus.get_object("org.kde.KWin", "/VirtualDesktopManager"),
+        properties = dbus.Interface(private.get_object("/VirtualDesktopManager"),
                                     "org.freedesktop.DBus.Properties")
         native = [str(row[1]) for row in properties.Get("org.kde.KWin.VirtualDesktopManager", "desktops")]
-        assert len(native) == 2
+        assert native == ids, "KWin did not read the seeded private desktop configuration"
+        checkpoint("configuration:verified", desktop_count=len(native))
         workspace, desktops = provision()
         for source, target in zip(native, desktops):
             cli("association", "set", "native-desktop", source, "--workspace", workspace, "--desktop", target)
-        controller = process("controller", str(ROOT / "target/debug/depthos"), "--db",
-                             str(results / "workspace.sqlite"), "controller", "run")
-        wait(lambda: bus.name_has_owner("org.depthos.Controller") and
-             bus.name_has_owner("org.depthos.StateInspector"))
-        observer = load_script(OBSERVER, "phase-4-3-observer")
-        marker = process("konsole", "konsole", "--separate", "--hide-menubar", "--hide-tabbar",
-                         "-e", "sleep", "110")
+        def start_controller(label):
+            child = process(label, str(ROOT / "target/debug/depthos"), "--db",
+                            str(results / "workspace.sqlite"), "controller", "run")
+            wait(lambda: bus.name_has_owner("org.depthos.Controller") and
+                 bus.name_has_owner("org.depthos.StateInspector"))
+            return child
 
+        controller = start_controller("controller")
+        package("install")
+        observer = load_script(installed, "depthos-system-observer-session")
+        endpoint = dbus.Interface(bus.get_object("org.depthos.Controller", "/org/depthos/Controller"),
+                                  "org.depthos.Controller1")
+
+        def shelf():
+            return json.loads(str(endpoint.GetDesktopShelves(dbus.UInt32(0), "")))
+
+        def observed():
+            return next((row for row in shelf()["data"]["items"]
+                         if row["applicationId"] == FIXTURE_ID), None)
+
+        checkpoint("window-create:before")
+        marker = process("window-fixture", sys.executable, "-c", FIXTURE, FIXTURE_ID)
+
+        checkpoint("window-create:during", fixture_pid=marker.pid)
+        wait(lambda: observed() and observed()["focused"])
+        checkpoint("window-focus:after", fixture_pid=marker.pid)
         if restart:
-            endpoint = dbus.Interface(bus.get_object("org.depthos.Controller", "/org/depthos/Controller"),
-                                      "org.depthos.Controller1")
-
-            def shelf():
-                return json.loads(str(endpoint.GetDesktopShelves(dbus.UInt32(0), "")))
-
-            def observed():
-                return next((row for row in shelf()["data"]["items"]
-                             if row["applicationId"] == "org.kde.konsole"), None)
-
-            wait(observed)
             before = observed()
             assert before["desktopId"] == desktops[0]
+            checkpoint("kwin-restart:before")
             kwin.terminate()
             kwin.wait(timeout=5)
             wait(lambda: not bus.name_has_owner("org.kde.KWin") and not shelf()["available"])
@@ -140,13 +188,16 @@ else
             marker.terminate()
             marker.wait(timeout=5)
             kwin = compositor("kwin-restarted")
-            load_script(OBSERVER, "phase-4-3-compositor-restart")
+            observer = load_script(installed, "depthos-system-observer-session")
             wait(lambda: shelf()["available"])
             assert not observed()
-            process("konsole-after-compositor-restart", "konsole", "--separate", "-e", "sleep", "60")
+            process("window-after-compositor-restart", sys.executable, "-c", FIXTURE, FIXTURE_ID)
             wait(observed)
             after = observed()
             assert after["desktopId"] == before["desktopId"] and after["id"] != before["id"]
+            checkpoint("kwin-restart:after")
+            assert unload(observer)
+            package("remove")
             print("PASS private KWin owner restart rebuilt shelves and retained durable rules", flush=True)
             return
 
@@ -159,11 +210,13 @@ else
         swaps = []
 
         def check(name, detail=None):
+            checkpoint("case:observed", case=name, detail=detail)
             evidence.append({"check": name, "detail": detail})
             (results / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
             print("PASS", name, detail if detail is not None else "", flush=True)
 
         def steps(window):
+            nonlocal controller
             backend = window.property("backend")
             scene = window.property("scene")
             window.frameSwapped.connect(lambda: swaps.append(time.monotonic()))
@@ -173,10 +226,10 @@ else
                 return rows.toVariant() if hasattr(rows, "toVariant") else rows
 
             def fixture():
-                return next((row for row in models() if row.get("appId") == "org.kde.konsole"), None)
+                return next((row for row in models() if row.get("appId") == FIXTURE_ID), None)
 
             def capture(name):
-                assert window.grabWindow().save(str(ARTIFACTS / "screenshots" / (name + ".png")))
+                assert window.grabWindow().save(str(results / "screenshots" / (name + ".png")))
 
             def card(identifier):
                 return scene.findNamed("windowCard-" + identifier)
@@ -218,11 +271,13 @@ else
             check("publisher loss clears real cards and preserves hierarchy")
             marker.terminate()
             marker.wait(timeout=5)
-            load_script(OBSERVER, "phase-4-3-observer-restart")
+            package("remove")
+            package("install")
+            replacement_observer = load_script(installed, "depthos-system-observer-session")
             yield lambda: backend.property("shelfFreshness") == "live"
             assert not fixture()
             check("observer replacement excludes removed windows")
-            replacement = process("konsole-replacement", "konsole", "--separate", "-e", "sleep", "90")
+            replacement = process("window-replacement", sys.executable, "-c", FIXTURE, FIXTURE_ID)
             yield lambda: fixture()
             assert fixture()["id"] != opaque_id
             check("new native window is assigned a new opaque identity")
@@ -233,6 +288,7 @@ else
             yield lambda: card(replacement_id)
             scene.setProperty("reducedMotion", False)
             scene.returnToParent()
+            checkpoint("window-destroy:before", fixture_pid=replacement.pid)
             replacement.terminate()
             scene.enterDeeper()
             yield lambda: not fixture() and not card(replacement_id)
@@ -248,10 +304,21 @@ else
                 check(name + " settled memory KiB", {line.split(":")[0]: int(line.split()[1])
                       for line in totals if line.startswith(("Rss:", "Pss:", "VmHWM:"))})
 
+            checkpoint("controller-reconnect:before", controller_pid=controller.pid)
             controller.terminate()
             yield lambda: backend.property("shelfFreshness") == "unavailable" and not models()
             capture("observer-unavailable")
             check("controller owner loss reports unavailable shelves")
+            controller.wait(timeout=5)
+            controller = start_controller("controller-restarted")
+            # KWin errors can suppress the observer callback. Its existing
+            # transport gives an outstanding call 30 seconds before retrying.
+            yield (lambda: backend.property("shelfFreshness") == "live", 45)
+            assert not fixture()
+            checkpoint("controller-reconnect:after", controller_pid=controller.pid)
+            check("controller restart reconnected the observer")
+            assert unload(replacement_observer)
+            package("remove")
 
         def drive(sequence, predicate=None, deadline=0):
             try:
@@ -267,7 +334,8 @@ else
                     QTimer.singleShot(15, lambda: drive(sequence, predicate, deadline))
                     return
                 next_check = next(sequence)
-                drive(sequence, next_check, time.monotonic() + 12)
+                predicate, budget = next_check if isinstance(next_check, tuple) else (next_check, 12)
+                drive(sequence, predicate, time.monotonic() + budget)
             except StopIteration:
                 QGuiApplication.exit(0)
             except Exception:
@@ -282,6 +350,8 @@ else
                 QTimer.singleShot(0, lambda: drive(steps(window)))
 
         QtQml.QQmlApplicationEngine = InstrumentedEngine
+        (results / "screenshots").mkdir(mode=0o700)
+        private.verify()
         sys.argv = [str(LAUNCHER), "--window-size", "1366x768", "--reduced-motion"]
         try:
             launcher.main()
@@ -304,34 +374,32 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inside", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--compositor-restart", action="store_true")
+    parser.add_argument("--interrupt", action="store_true")
     args = parser.parse_args()
     os.umask(0o077)
     if args.inside:
         run_isolated(args.inside, args.compositor_restart)
         return
-    (ARTIFACTS / "screenshots").mkdir(parents=True, exist_ok=True, mode=0o700)
-    results = Path(tempfile.mkdtemp(dir=ARTIFACTS, prefix="wayland-"))
-    env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "QT_QPA_PLATFORM": "wayland",
-           "WAYLAND_DISPLAY": "depthos-phase-43", "QT_NO_XDG_DESKTOP_PORTAL": "1",
-           "XDG_SESSION_TYPE": "wayland", "KWIN_XKB_DEFAULT_KEYMAP": "1"}
-    for key, name in (("HOME", "home"), ("XDG_RUNTIME_DIR", "runtime"), ("XDG_CONFIG_HOME", "config"),
-                      ("XDG_DATA_HOME", "data"), ("XDG_CACHE_HOME", "cache"), ("XDG_STATE_HOME", "state")):
-        path = results / name
-        path.mkdir(mode=0o700)
-        env[key] = str(path)
+    ARTIFACTS.mkdir(parents=True, exist_ok=True, mode=0o700)
+    results = Path(tempfile.mkdtemp(dir=ARTIFACTS, prefix="w-"))
     print(results, flush=True)
-    command = ["dbus-run-session", "--", sys.executable, __file__, "--inside", str(results)]
+    command = [sys.executable, __file__, "--inside", str(results)]
     if args.compositor_restart:
         command.append("--compositor-restart")
-    with subprocess.Popen(command,
-                          env=env, start_new_session=True) as session:
-        try:
-            return session.wait(timeout=110)
-        finally:
-            try:
-                os.killpg(session.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+    with HostMonitor(results / "host.jsonl") as monitor:
+        status = launch(results, command, wayland=True, monitor=monitor,
+                        interrupt_at="script-load:after" if args.interrupt else None)
+    monitor.require_clean()
+    print(f"Host monitor clean across {monitor.checkpoints} checkpoints", flush=True)
+    assert status == (130 if args.interrupt else 0), f"Private worker exited with {status}"
+    stages = [json.loads(line) for line in (results / "stages.jsonl").read_text().splitlines()]
+    assert stages[-1]["stage"] == "cleanup:after" and not stages[-1]["owned_pids"]
+    assert not (results / "data/kwin/scripts/depthos-system-observer").exists()
+    assert not (results / "runtime" / SOCKET).exists()
+    if args.interrupt:
+        assert any(row["stage"] == "interruption:requested" for row in stages)
+        print("PASS interruption after script load left no owned processes or package", flush=True)
+    return 0
 
 
 if __name__ == "__main__":

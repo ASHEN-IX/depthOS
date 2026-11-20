@@ -373,4 +373,16 @@ def run_worker(run):
 
 
 if __name__ == "__main__":
-    run_test_suite()
+    sys.path.insert(0, str(ROOT / "tests/support"))
+    from private_session import guard, launch
+
+    if len(sys.argv) == 3 and sys.argv[1] == "--inside":
+        guard(Path(sys.argv[2])).close()
+        run_test_suite()
+    else:
+        require(len(sys.argv) == 1, "Unexpected native fixture arguments")
+        os.umask(0o077)
+        with tempfile.TemporaryDirectory(prefix="depthos-p3-scope-") as name:
+            root = Path(name)
+            raise SystemExit(launch(root, [sys.executable, __file__, "--inside", name],
+                                    wayland=False))

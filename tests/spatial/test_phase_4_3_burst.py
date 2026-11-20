@@ -18,7 +18,10 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 EXE = ROOT / "target/debug/depthos"
 LAUNCHER = ROOT / "tools/depthos-spatial-alpha"
-OUTPUT = ROOT / "artifacts/phase-4-3/logs/synthetic-burst.json"
+sys.path.insert(0, str(ROOT / "tests/support"))
+from private_session import guard, launch
+
+ARTIFACTS = ROOT / "artifacts/phase-4-3-1"
 
 
 def memory(pid):
@@ -34,6 +37,7 @@ def cpu(pid):
 
 
 def fixture(folder):
+    guard(folder).close()
     import dbus
     import dbus.service
     from PyQt6 import QtQml
@@ -202,7 +206,7 @@ def fixture(folder):
             metrics["focusSendToUiP95Ms"] = round(statistics.quantiles(
                 metrics["focusSendToUiMs"], n=20, method="inclusive")[18], 2)
             metrics["maxTimerGapMs"] = round(max(timer_intervals) * 1000, 2)
-            OUTPUT.write_text(json.dumps(metrics, indent=2) + "\n")
+            (folder / "synthetic-burst.json").write_text(json.dumps(metrics, indent=2) + "\n")
             print("Synthetic focus p95:", metrics["focusP95Ms"], "ms", flush=True)
             assert metrics["focusSendToUiP95Ms"] < 250
 
@@ -248,15 +252,12 @@ def fixture(folder):
 def main():
     os.umask(0o077)
     if len(sys.argv) == 2:
-        assert Path(os.environ["XDG_RUNTIME_DIR"]) == Path(sys.argv[1])
         fixture(Path(sys.argv[1]))
         return
-    with tempfile.TemporaryDirectory(prefix="depthos-shelf-burst-") as folder:
-        env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "HOME": folder,
-               "QT_QPA_PLATFORM": "offscreen", "QT_QUICK_BACKEND": "software", "XDG_RUNTIME_DIR": folder,
-               "XDG_CONFIG_HOME": str(Path(folder) / "config"), "QT_NO_XDG_DESKTOP_PORTAL": "1"}
-        subprocess.run(["dbus-run-session", "--", sys.executable, __file__, folder],
-                       env=env, check=True, timeout=90)
+    ARTIFACTS.mkdir(parents=True, exist_ok=True, mode=0o700)
+    folder = Path(tempfile.mkdtemp(dir=ARTIFACTS, prefix="b-"))
+    print(folder, flush=True)
+    raise SystemExit(launch(folder, [sys.executable, __file__, str(folder)], wayland=False))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +14,9 @@ import time
 import traceback
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tests/support"))
+from private_session import SOCKET, PrivateKWin, guard, launch
+
 DEPTHOS = ROOT / "target/debug/depthos"
 LAUNCHER = ROOT / "tools/depthos-spatial-alpha"
 CONTROLLER = "org.depthos.Controller"
@@ -151,31 +155,33 @@ def run_client(mode, folder, screenshot):
 
 
 def inside(args):
-    folder = Path(os.environ["XDG_RUNTIME_DIR"])
+    root = args.inside
+    bus = guard(root)
     compositor = None
     try:
         if args.wayland:
-            import dbus
-
             compositor = subprocess.Popen(
-                ["kwin_wayland", "--virtual", "--no-lockscreen", "--width", "1600",
-                 "--height", "1000", "--socket", "depthos-launcher-test"],
+                ["/usr/bin/kwin_wayland", "--virtual", "--no-lockscreen", "--no-global-shortcuts",
+                 "--width", "1600", "--height", "1000", "--socket", SOCKET],
                 stdout=sys.stderr,
             )
-            bus = dbus.SessionBus()
             for _ in range(150):
-                if bus.name_has_owner("org.kde.KWin") and (folder / os.environ["WAYLAND_DISPLAY"]).exists():
+                if bus.name_has_owner("org.kde.KWin") and (root / "runtime" / SOCKET).is_socket():
                     break
                 assert compositor.poll() is None, "Private KWin did not start"
                 time.sleep(0.05)
             else:
                 raise AssertionError("Private KWin did not expose its Wayland socket")
+            private = PrivateKWin(root, bus, compositor)
         for mode in ("onboarding", "controller"):
-            command = [sys.executable, __file__, "--client", mode]
+            if compositor:
+                private.verify()
+            command = [sys.executable, __file__, "--inside", str(root), "--client", mode]
             if args.screenshot and mode == "controller":
-                command.extend(["--screenshot", str(args.screenshot)])
+                command.extend(["--screenshot", str(root / "launcher.png")])
             subprocess.run(command, check=True, timeout=35)
     finally:
+        bus.close()
         stop(compositor)
 
 
@@ -183,44 +189,37 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wayland", action="store_true")
     parser.add_argument("--screenshot", type=Path, help="Optional own-window capture of the controller state")
-    parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--inside", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--client", choices=["onboarding", "controller"], help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.client or args.inside:
-        private_runtime = os.environ.get("DEPTHOS_LAUNCHER_TEST")
-        if not private_runtime or private_runtime != os.environ.get("XDG_RUNTIME_DIR"):
-            parser.error("Run without internal test flags to create a private session")
-        if args.client:
-            run_client(args.client, Path(os.environ["XDG_RUNTIME_DIR"]), args.screenshot)
-        else:
-            inside(args)
+    if args.client:
+        if not args.inside:
+            parser.error("Internal client requires an owned session root")
+        guard(args.inside).close()
+        run_client(args.client, args.inside / "runtime", args.screenshot)
+        return
+    if args.inside:
+        inside(args)
         return
 
     os.umask(0o077)
+    destination = args.screenshot.absolute() if args.screenshot else None
+    if destination and (destination.resolve() != destination or
+                        not destination.is_relative_to(ROOT / "artifacts")):
+        parser.error("Save regression screenshots under the repository's artifacts directory")
     with tempfile.TemporaryDirectory(prefix="depthos-launcher-") as name:
-        folder = Path(name)
-        env = {
-            "PATH": os.environ["PATH"],
-            "LANG": "C.UTF-8",
-            "HOME": str(folder / "home"),
-            "XDG_RUNTIME_DIR": str(folder / "run"),
-            "XDG_CONFIG_HOME": str(folder / "config"),
-            "XDG_DATA_HOME": str(folder / "data"),
-            "XDG_CACHE_HOME": str(folder / "cache"),
-            "XDG_STATE_HOME": str(folder / "state"),
-            "QT_NO_XDG_DESKTOP_PORTAL": "1",
-        }
-        for key in ("HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
-                    "XDG_CACHE_HOME", "XDG_STATE_HOME"):
-            Path(env[key]).mkdir(mode=0o700)
-        env["DEPTHOS_LAUNCHER_TEST"] = env["XDG_RUNTIME_DIR"]
+        root = Path(name)
+        command = [sys.executable, __file__, "--inside", str(root)]
         if args.wayland:
-            env.update(QT_QPA_PLATFORM="wayland", WAYLAND_DISPLAY="depthos-launcher-test",
-                       XDG_SESSION_TYPE="wayland")
-        else:
-            env.update(QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software")
-        command = ["dbus-run-session", "--", sys.executable, __file__, "--inside", *sys.argv[1:]]
-        subprocess.run(command, env=env, check=True, timeout=85)
+            command.append("--wayland")
+        if destination:
+            command.extend(["--screenshot", str(root / "launcher.png")])
+        if launch(root, command, wayland=args.wayland):
+            raise RuntimeError("Private launcher regression failed")
+        if destination:
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with destination.open("xb") as output, (root / "launcher.png").open("rb") as source:
+                shutil.copyfileobj(source, output)
 
 
 if __name__ == "__main__":

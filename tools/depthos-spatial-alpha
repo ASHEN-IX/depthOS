@@ -14,6 +14,8 @@ Safe development launch commands:
     depthos ui
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -21,11 +23,22 @@ import signal
 import subprocess
 import sys
 import time
-import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 QML_FILE = ROOT / "experiments/spatial-alpha/main.qml"
 DEPTHOS = None
+CONTROLLER_SERVICE = "org.depthos.Controller"
+CONTROLLER_PATH = "/org/depthos/Controller"
+CONTROLLER_INTERFACE = "org.depthos.Controller1"
+
+
+def date_label(timestamp_ms=None):
+    try:
+        instant = (datetime.now(timezone.utc) if timestamp_ms is None
+                   else datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc))
+    except (OverflowError, OSError, TypeError, ValueError):
+        return ""
+    return instant.isoformat(timespec="seconds")
 
 # Init refuses these. The UI must not offer "Create" as if it would succeed.
 BLOCKED_DB_STATES = {
@@ -92,11 +105,14 @@ def clear_hierarchy(backend):
     backend.setProperty("observerLive", False)
     backend.setProperty("observationHealth", "Unavailable")
     backend.setProperty("sourceKind", "none")
+    backend.setProperty("sourceLoadedAt", "")
+    backend.setProperty("state", "Unavailable")
 
 
 def apply_sqlite_provenance(backend, db_path):
     backend.setProperty("mockMode", False)
     backend.setProperty("sourceKind", "sqlite")
+    backend.setProperty("sourceLoadedAt", date_label())
     backend.setProperty("sourceDetail", str(db_path))
     backend.setProperty("state", "Database Mode")
     backend.setProperty("health", "Local")
@@ -127,10 +143,7 @@ def load_from_db_path(db_path, backend):
             worlds.append({
                 "id": w_id,
                 "name": world_info.get("name", "World"),
-                "description": world_info.get("description") or "Logical Domain",
-                "icon": "🌐",
-                "color": "#6366F1",
-                "accent": "#818CF8"
+                "description": world_info.get("description") or "",
             })
             for ws in w.get("workspaces", []):
                 ws_info = ws.get("workspace", {})
@@ -139,16 +152,16 @@ def load_from_db_path(db_path, backend):
                     "id": ws_id,
                     "worldId": w_id,
                     "name": ws_info.get("name", "Workspace"),
-                    "description": ws_info.get("description") or "Logical Workspace",
+                    "description": ws_info.get("description") or "",
                     "rootDirectory": ws_info.get("root_directory") or "",
-                    "gitBranch": ""
+                    "updatedAt": date_label(ws_info["updated_at_ms"]) if ws_info.get("updated_at_ms") else "",
                 })
                 for d in ws.get("desktops", []):
                     desktops.append({
                         "id": d.get("id"),
                         "workspaceId": ws_id,
                         "name": d.get("name", "Desktop"),
-                        "role": d.get("role") or "Logical Desktop"
+                        "role": d.get("role") or ""
                     })
         backend.setProperty("worlds", worlds)
         backend.setProperty("workspaces", workspaces)
@@ -164,142 +177,112 @@ def load_from_db_path(db_path, backend):
                 if sub_d:
                     backend.setProperty("selectedDesktopId", sub_d[0]["id"])
         return True
-    except Exception as e:
-        sys.stderr.write(f"depthos-spatial-alpha: Failed to load from database {db_path}: {e}\n")
+    except Exception:
+        sys.stderr.write("depthos-spatial-alpha: Could not read the logical hierarchy from SQLite.\n")
         return False
 
 
-def load_from_dbus(endpoint, backend):
+def read_controller(owner):
+    """Fetch the bounded read-only projection on a worker thread."""
+    import dbus
+
+    bus = dbus.SessionBus(private=True)
     try:
-        import dbus
-        health_raw = json.loads(str(endpoint.GetControllerHealth()))
-        health_data = health_raw.get("data", {}).get("health", {})
-        lifecycle = health_data.get("lifecycle", "Unknown")
-        obs_health = health_data.get("observation", "Unknown")
+        endpoint = dbus.Interface(
+            bus.get_object(owner, CONTROLLER_PATH, introspect=False), CONTROLLER_INTERFACE
+        )
+        deadline = time.monotonic() + 2
 
-        # Fetch hierarchy pages
+        def query(method, *args):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Controller read timed out")
+            reply = json.loads(str(method(*args, timeout=remaining)))
+            if reply.get("schemaVersion") != 1:
+                raise ValueError("Unsupported controller reply")
+            return reply
+
         cursor = 0
-        rev = ""
-        items = []
-        while True:
-            page = json.loads(str(endpoint.GetHierarchy(dbus.UInt32(cursor), rev)))
-            p_data = page.get("data", {})
-            items.extend(p_data.get("items", []))
-            rev = page.get("revision", "")
-            cursor = p_data.get("nextCursor")
-            if cursor is None:
+        revision = ""
+        worlds, workspaces, desktops = [], [], []
+        # The bridge bounds hierarchy rows to 4096 and returns pages of 64.
+        for _ in range(64):
+            reply = query(endpoint.GetHierarchy, dbus.UInt32(cursor), revision)
+            revision = reply["revision"]
+            for item in reply["data"]["items"]:
+                kind = item["kind"]
+                row = {"id": item["id"], "name": item["name"]}
+                if kind == "world":
+                    worlds.append(row)
+                elif kind == "workspace":
+                    row["worldId"] = item["parentId"]
+                    workspaces.append(row)
+                elif kind == "desktop":
+                    row["workspaceId"] = item["parentId"]
+                    desktops.append(row)
+            next_cursor = reply["data"]["nextCursor"]
+            if next_cursor is None:
                 break
-
-        worlds = []
-        workspaces = []
-        desktops = []
-        for item in items:
-            k = item.get("kind")
-            if k == "world":
-                worlds.append({
-                    "id": item["id"],
-                    "name": item["name"],
-                    "description": "Logical World Domain",
-                    "icon": "🌐",
-                    "color": "#6366F1",
-                    "accent": "#818CF8"
-                })
-            elif k == "workspace":
-                workspaces.append({
-                    "id": item["id"],
-                    "worldId": item["parentId"],
-                    "name": item["name"],
-                    "description": "Logical Workspace",
-                    "rootDirectory": "",
-                    "gitBranch": ""
-                })
-            elif k == "desktop":
-                desktops.append({
-                    "id": item["id"],
-                    "workspaceId": item["parentId"],
-                    "name": item["name"],
-                    "role": "Logical Desktop"
-                })
-
-        # Fetch context report
-        cursor = 0
-        rev = ""
-        context_items = []
-        while True:
-            page = json.loads(str(endpoint.GetContextReport(dbus.UInt32(cursor), rev)))
-            p_data = page.get("data", {})
-            context_items.extend(p_data.get("items", []))
-            rev = page.get("revision", "")
-            cursor = p_data.get("nextCursor")
-            if cursor is None:
-                break
-
-        if obs_health == "Synchronized":
-            badge_default = "Live"
-        elif obs_health == "Desynchronized":
-            badge_default = "Stale"
-        elif lifecycle == "WaitingForObserver":
-            badge_default = "Reconnecting"
+            if not cursor < next_cursor < 4096:
+                raise ValueError("Invalid hierarchy cursor")
+            cursor = next_cursor
         else:
-            badge_default = "Unavailable"
-        # "Synchronized" is the only controller health that means the native
-        # observer is live. A connected controller is not enough.
-        observer_live = obs_health == "Synchronized"
-        if not observer_live and badge_default == "Live":
-            badge_default = "Unavailable"
+            raise ValueError("Hierarchy page limit exceeded")
 
-        windows = []
-        for item in context_items:
-            win = item.get("window", {})
-            app_id = win.get("runtimeId", "window")
-            targets = item.get("targets", [])
-            desktop_id = targets[0] if targets else ""
-            status = item.get("status", "Unknown")
-            reason = item.get("reason", "")
-            badge = badge_default if status == "Assigned" else "Unknown"
+        health_reply = query(endpoint.GetControllerHealth)
+        health = health_reply["data"].get("health") or {}
+        return worlds, workspaces, desktops, health, reply["available"]
+    finally:
+        bus.close()
 
-            windows.append({
-                "id": win.get("runtimeId", str(uuid.uuid4())),
-                "desktopId": desktop_id,
-                "nativeId": item.get("nativeId") or "",
-                "appId": app_id,
-                "appName": app_id.split(".")[-1].capitalize(),
-                "title": win.get("title", app_id),
-                "minimized": False,
-                "fullscreen": False,
-                "focused": False,
-                "statusBadge": badge,
-                "statusReason": reason or (
-                    "Observed by the native observer" if observer_live
-                    else "Controller connected; native observer is not live"
-                )
-            })
 
-        backend.setProperty("worlds", worlds)
-        backend.setProperty("workspaces", workspaces)
-        backend.setProperty("desktops", desktops)
-        backend.setProperty("windows", windows)
-        backend.setProperty("mockMode", False)
-        backend.setProperty("sourceKind", "controller")
-        backend.setProperty("sourceDetail", "org.depthos.Controller")
-        backend.setProperty("state", "Connected")
-        backend.setProperty("health", lifecycle)
-        backend.setProperty("observerLive", observer_live)
-        backend.setProperty("observerDetail", str(obs_health))
-        backend.setProperty("observationHealth", "Live" if observer_live else badge_default)
+def apply_controller_hierarchy(backend, hierarchy):
+    worlds, workspaces, desktops = hierarchy
+    # Controller context targets are Workspace IDs. The read-only projection
+    # has no confirmed native-to-logical desktop mapping or display metadata.
+    previous_desktop = backend.property("selectedDesktopId")
+    previous_workspace = backend.property("selectedWorkspaceId")
+    previous_world = backend.property("selectedWorldId")
+    backend.setProperty("worlds", worlds)
+    backend.setProperty("workspaces", workspaces)
+    backend.setProperty("desktops", desktops)
+    backend.setProperty("windows", [])
+    world = next((w for w in worlds if w["id"] == previous_world), worlds[0] if worlds else None)
+    descendants = [w for w in workspaces if world and w["worldId"] == world["id"]]
+    workspace = next((w for w in descendants if w["id"] == previous_workspace),
+                     descendants[0] if descendants else None)
+    descendants = [d for d in desktops if workspace and d["workspaceId"] == workspace["id"]]
+    desktop = next((d for d in descendants if d["id"] == previous_desktop),
+                   descendants[0] if descendants else None)
+    backend.setProperty("selectedWorldId", world["id"] if world else "")
+    backend.setProperty("selectedWorkspaceId", workspace["id"] if workspace else "")
+    backend.setProperty("selectedDesktopId", desktop["id"] if desktop else "")
+    backend.setProperty("selectedWindowId", "")
 
-        if worlds:
-            backend.setProperty("selectedWorldId", worlds[0]["id"])
-            sub_ws = [ws for ws in workspaces if ws["worldId"] == worlds[0]["id"]]
-            if sub_ws:
-                backend.setProperty("selectedWorkspaceId", sub_ws[0]["id"])
-                sub_d = [d for d in desktops if d["workspaceId"] == sub_ws[0]["id"]]
-                if sub_d:
-                    backend.setProperty("selectedDesktopId", sub_d[0]["id"])
-        return True
-    except Exception as e:
-        sys.stderr.write(f"depthos-spatial-alpha: D-Bus update error: {e}\n")
-        return False
+
+def apply_controller_health(backend, health, hierarchy_available):
+    lifecycle = health.get("lifecycle", "Unknown")
+    observation = health.get("observation", "Unknown")
+    observer_live = observation == "Synchronized"
+    if observer_live:
+        observation_health = "Live"
+    elif observation == "Desynchronized":
+        observation_health = "Stale"
+    elif lifecycle in ("WaitingForObserver", "Recovering"):
+        observation_health = "Reconnecting"
+    else:
+        observation_health = "Unavailable"
+
+    backend.setProperty("onboardingState", "hidden")
+    backend.setProperty("mockMode", False)
+    backend.setProperty("sourceKind", "controller")
+    detail = CONTROLLER_SERVICE if hierarchy_available else "Hierarchy unavailable"
+    backend.setProperty("sourceDetail", detail)
+    backend.setProperty("state", "Connected")
+    backend.setProperty("health", lifecycle)
+    backend.setProperty("observerLive", observer_live)
+    backend.setProperty("observerDetail", observation)
+    backend.setProperty("observationHealth", observation_health)
 
 
 def main():
@@ -358,10 +341,10 @@ def main():
 
     # Import PyQt6
     try:
-        from PyQt6.QtCore import QUrl, QTimer, QObject, Qt, pyqtSlot
+        from PyQt6.QtCore import QUrl, QTimer, QObject, Qt, pyqtSignal, pyqtSlot
         from PyQt6.QtGui import QGuiApplication
         from PyQt6.QtQml import QQmlApplicationEngine
-        from PyQt6.QtDBus import QDBusConnection
+        from PyQt6.QtDBus import QDBusConnection, QDBusServiceWatcher
     except ImportError as e:
         sys.stderr.write(f"depthos-spatial-alpha: PyQt6 is required but could not be imported: {e}\n")
         sys.exit(1)
@@ -392,6 +375,9 @@ def main():
     root = engine.rootObjects()[0]
     backend = root.property("backend")
     scene = root.property("scene")
+
+    if scene.metaObject().indexOfProperty("pointerSelectionDelay") >= 0:
+        scene.setProperty("pointerSelectionDelay", app.styleHints().mouseDoubleClickInterval() + 30)
 
     if args.reduced_motion:
         root.setProperty("reducedMotion", True)
@@ -485,44 +471,114 @@ def main():
             be.setProperty("onboardingMessage", "Could not open the workspace database")
         return False
 
+    class ControllerReader(QObject):
+        ready = pyqtSignal(str, object)
+
+        def __init__(self, bus, owner):
+            super().__init__(app)
+            self.owner = owner
+            self.busy = False
+            self.pending = False
+            self.hierarchy = None
+            self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="depthos-controller")
+            self.ready.connect(self.apply)
+            self.watcher = QDBusServiceWatcher(
+                CONTROLLER_SERVICE, bus,
+                QDBusServiceWatcher.WatchModeFlag.WatchForOwnerChange, self,
+            )
+            self.watcher.serviceOwnerChanged.connect(self.owner_changed)
+            bus.connect(
+                CONTROLLER_SERVICE, CONTROLLER_PATH, CONTROLLER_INTERFACE,
+                "Invalidated", "su", self.invalidated,
+            )
+
+        @pyqtSlot(str, "uint")
+        def invalidated(self, _instance, _scope):
+            self.refresh()
+
+        def owner_changed(self, _service, _old, owner):
+            self.owner = owner
+            if backend.property("isDemo"):
+                return
+            self.mark_unavailable()
+            self.refresh()
+
+        def mark_unavailable(self):
+            if backend.property("sourceKind") == "controller":
+                backend.setProperty("sourceDetail", "Last controller snapshot")
+            backend.setProperty("state", "Unavailable")
+            backend.setProperty("health", "Unknown")
+            backend.setProperty("observerLive", False)
+            backend.setProperty("observerDetail", "Controller unavailable")
+            backend.setProperty("observationHealth", "Unavailable")
+
+        def refresh(self):
+            if not self.owner or backend.property("isDemo"):
+                return
+            if self.busy:
+                self.pending = True
+                return
+            self.busy = True
+            owner = self.owner
+            self.pool.submit(self.read, owner)
+
+        def read(self, owner):
+            try:
+                payload = read_controller(owner)
+            except Exception:
+                # Transport errors can contain server-provided text.
+                payload = None
+            self.ready.emit(owner, payload)
+
+        @pyqtSlot(str, object)
+        def apply(self, owner, payload):
+            self.busy = False
+            if owner == self.owner and not backend.property("isDemo"):
+                if payload is not None:
+                    first = backend.property("sourceKind") != "controller"
+                    was_connected = backend.property("state") == "Connected"
+                    worlds, workspaces, desktops, health, available = payload
+                    hierarchy = (worlds, workspaces, desktops)
+                    if available and (first or hierarchy != self.hierarchy):
+                        self.hierarchy = hierarchy
+                        apply_controller_hierarchy(backend, hierarchy)
+                        backend.setProperty("sourceLoadedAt", date_label())
+                        scene.syncIndices()
+                    apply_controller_health(backend, health, available)
+                    if first:
+                        finish_sync()
+                    if not was_connected:
+                        sys.stderr.write(
+                            f"[depthos-spatial-alpha] controller ready; "
+                            f"observer={backend.property('observationHealth')}\n"
+                        )
+                else:
+                    self.mark_unavailable()
+                    if backend.property("sourceKind") == "none":
+                        present_database(backend, scene, None)
+            if self.pending:
+                self.pending = False
+                self.refresh()
+
     def try_controller(be):
-        try:
-            import dbus
-            sbus = dbus.SessionBus()
-            if not sbus.name_has_owner("org.depthos.Controller"):
-                return False
-            endpoint = dbus.Interface(
-                sbus.get_object("org.depthos.Controller", "/org/depthos/Controller"),
-                "org.depthos.Controller1",
-            )
-            if not load_from_dbus(endpoint, be):
-                return False
-
-            class SignalReceiver(QObject):
-                def __init__(self, ep, target):
-                    super().__init__()
-                    self.ep = ep
-                    self.target = target
-
-                @pyqtSlot(str, int)
-                def on_invalidated(self, instance, scopes):
-                    load_from_dbus(self.ep, self.target)
-
-            receiver = SignalReceiver(endpoint, be)
-            qbus = QDBusConnection.sessionBus()
-            qbus.connect(
-                "org.depthos.Controller",
-                "/org/depthos/Controller",
-                "org.depthos.Controller1",
-                "invalidated",
-                receiver.on_invalidated,
-            )
-            engine.receiver_ref = receiver
-            be.setProperty("onboardingState", "hidden")
-            return True
-        except Exception as exc:
-            sys.stderr.write(f"depthos-spatial-alpha: controller probe failed: {exc}\n")
+        reader = getattr(engine, "controller_reader", None)
+        if reader is not None:
+            if reader.owner:
+                reader.refresh()
+                return True
             return False
+        bus = QDBusConnection.sessionBus()
+        interface = bus.interface()
+        if interface is None:
+            return False
+        reply = interface.serviceOwner(CONTROLLER_SERVICE)
+        if not reply.isValid() or not reply.value():
+            return False
+        be.setProperty("state", "Connecting")
+        reader = ControllerReader(bus, reply.value())
+        engine.controller_reader = reader
+        reader.refresh()
+        return True
 
     def choose_source(be, sc, db_path, allow_controller):
         if args.mock:
@@ -667,10 +723,8 @@ def main():
         # session the root object is exposed as QWindow and that call aborted.
         try:
             args.screenshot.parent.mkdir(parents=True, exist_ok=True)
-            escaped = str(args.screenshot).replace("\\", "/").replace('"', "")
-            callback = engine.evaluate(
-                '(function(result) { result.saveToFile("' + escaped + '"); })'
-            )
+            destination = json.dumps(str(args.screenshot))
+            callback = engine.evaluate(f"(function(result) {{ result.saveToFile({destination}); }})")
             scene.grabToImage(callback)
         except Exception as exc:
             sys.stderr.write(f"depthos-spatial-alpha: screenshot failed: {exc}\n")
@@ -716,6 +770,9 @@ def main():
     )
     sys.stderr.write("[depthos-spatial-alpha] Viewport ready. H/J/K/L, Enter, double-click, wheel, Esc, /.\n")
     code = app.exec()
+    reader = getattr(engine, "controller_reader", None)
+    if reader is not None:
+        reader.pool.shutdown(wait=True, cancel_futures=True)
     if memory_probe and not memory_probe.file.closed:
         memory_probe.close()
     if frame_probe and not frame_probe.file.closed:

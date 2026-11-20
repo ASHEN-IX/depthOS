@@ -4,6 +4,7 @@
 const MOCK_WORLDS = [
     {
         id: "world-engineering",
+        artCategory: "projects",
         name: "Core Engineering",
         icon: "💻",
         description: "DepthOS kernel, spatial compositor, and platform daemons",
@@ -12,6 +13,7 @@ const MOCK_WORLDS = [
     },
     {
         id: "world-security",
+        artCategory: "research",
         name: "Security Research",
         icon: "🛡️",
         description: "Vulnerability analysis, action leases, and verification audits",
@@ -20,6 +22,7 @@ const MOCK_WORLDS = [
     },
     {
         id: "world-design",
+        artCategory: "social",
         name: "Creative & Design",
         icon: "🎨",
         description: "Spatial interaction design, UI shaders, and animation tokens",
@@ -28,6 +31,7 @@ const MOCK_WORLDS = [
     },
     {
         id: "world-personal",
+        artCategory: "focus",
         name: "Personal & Admin",
         icon: "☕",
         description: "Communication, daily planning, and task management",

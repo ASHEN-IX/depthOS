@@ -13,6 +13,7 @@ Item {
     property color accent: NeonTheme.emerald
     property string accessibleLabel: ""
     property string accessibleDescription: ""
+    property Item openTarget: null
     property bool pointerEnabled: true
     property int radius: NeonTheme.cardRadius
     default property alias content: contentLayer.data
@@ -71,7 +72,15 @@ Item {
         enabled: card.pointerEnabled
         hoverEnabled: card.available
         cursorShape: card.available ? Qt.PointingHandCursor : Qt.ArrowCursor
-        onClicked: if (card.available) card.chosen()
+        onClicked: mouse => {
+            if (!card.available)
+                return;
+            const target = card.openTarget;
+            if (target && target.visible && target.contains(target.mapFromItem(pointer, mouse.x, mouse.y)))
+                card.activated();
+            else
+                card.chosen();
+        }
         onDoubleClicked: if (card.available) card.activated()
     }
 }

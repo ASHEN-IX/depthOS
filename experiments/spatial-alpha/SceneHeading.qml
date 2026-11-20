@@ -10,6 +10,7 @@ Column {
 
     NeonLabel {
         id: eyebrow
+        visible: text.length > 0
         width: parent.width
         color: NeonTheme.cyan
         elide: Text.ElideRight

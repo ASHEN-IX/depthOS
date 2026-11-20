@@ -720,11 +720,24 @@ Item {
         z: 10
     }
 
+    SpatialRail {
+        id: navigationRail
+        scene: scene
+        visible: scene.width >= 1160 && scene.height >= 600
+        enabled: !scene.navigationBlocked()
+        x: 18
+        y: NeonTheme.hudHeight + 32
+        width: 122
+        height: 343
+        z: 3
+    }
+
     Item {
         id: canvasViewport
         objectName: "canvasViewport"
         anchors.fill: parent
         anchors.topMargin: NeonTheme.hudHeight
+        anchors.leftMargin: navigationRail.visible ? navigationRail.x + navigationRail.width + 12 : 0
         anchors.bottomMargin: NeonTheme.footerHeight
         enabled: !scene.navigationBlocked()
         clip: true

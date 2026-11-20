@@ -20,6 +20,7 @@ Item {
     // A controller connection says nothing about native observation: that is
     // the separate, independent observerLive flag.
     property string sourceKind: "none"
+    property var customWorldArtwork: []
     property string sourceDetail: ""
     property string sourceLoadedAt: ""
     readonly property string controllerStatus: state === "Connecting" || state === "Connected" ? state : "Unavailable"

@@ -29,6 +29,8 @@ QtObject {
     readonly property color emeraldHaze: "#3512E6A0"
     readonly property color grid: "#402D5081"
     readonly property color gridHorizon: "#7A3F5985"
+    readonly property color glassHighlight: "#F0172C3C"
+    readonly property color glass: "#EC0C1925"
     readonly property color shell: "#EE0D1527"
 
     readonly property int margin: 28

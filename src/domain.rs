@@ -209,6 +209,8 @@ pub enum Error {
     Output(#[from] std::io::Error),
     #[error("serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("invalid UUID: {0}")]
+    Uuid(#[from] uuid::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

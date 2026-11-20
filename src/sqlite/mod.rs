@@ -1391,6 +1391,60 @@ impl Store for SqliteStore {
         tx.commit()?;
         Ok(list)
     }
+
+    fn desktop_association_count(&self, desktop_id: DesktopId) -> Result<usize> {
+        let tx = self.connection.unchecked_transaction()?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version < 2 {
+            tx.commit()?;
+            return Ok(0);
+        }
+        let count: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM desktop_association_rules WHERE desktop_id = ?1",
+                params![desktop_id.0],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        tx.commit()?;
+        Ok(count as usize)
+    }
+
+    fn workspace_association_count(&self, workspace_id: WorkspaceId) -> Result<usize> {
+        let tx = self.connection.unchecked_transaction()?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version < 2 {
+            tx.commit()?;
+            return Ok(0);
+        }
+        let count: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM desktop_association_rules WHERE workspace_id = ?1",
+                params![workspace_id.0],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        tx.commit()?;
+        Ok(count as usize)
+    }
+
+    fn world_association_count(&self, world_id: WorldId) -> Result<usize> {
+        let tx = self.connection.unchecked_transaction()?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version < 2 {
+            tx.commit()?;
+            return Ok(0);
+        }
+        let count: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM desktop_association_rules r JOIN workspaces w ON r.workspace_id = w.id WHERE w.world_id = ?1",
+                params![world_id.0],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        tx.commit()?;
+        Ok(count as usize)
+    }
 }
 
 fn read_tree(tx: &Transaction<'_>) -> Result<Universe> {

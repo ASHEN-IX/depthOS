@@ -191,3 +191,211 @@ fn concurrent_first_open_migrates_once_and_preserves_uniqueness() {
         1
     );
 }
+
+#[test]
+fn phase_4_4_cli_crud_archival_and_preferences() {
+    let temp = tempfile::tempdir().unwrap();
+    let at = temp.path();
+
+    // 1. Create world with Phase 4.4 metadata
+    let world = output(cli(
+        at,
+        &[
+            "--db",
+            "p44.db",
+            "world",
+            "create",
+            "DevWorld",
+            "--description",
+            "Developer World",
+            "--visual-identity",
+            "neon-cyan",
+            "--artwork",
+            "cyber-grid",
+        ],
+    ));
+    let world_id = world["id"].as_str().unwrap();
+
+    // 2. Update world
+    let _ = output(cli(
+        at,
+        &[
+            "--db",
+            "p44.db",
+            "world",
+            "update",
+            world_id,
+            "--description",
+            "Updated Description",
+            "--version",
+            "1",
+        ],
+    ));
+
+    // 3. Create workspace
+    let ws = output(cli(
+        at,
+        &[
+            "--db",
+            "p44.db",
+            "workspace",
+            "create",
+            "--world",
+            world_id,
+            "--name",
+            "CoreWorkspace",
+            "--root-directory",
+            at.to_str().unwrap(),
+        ],
+    ));
+    let ws_id = ws["id"].as_str().unwrap();
+
+    // 4. Create desktop
+    let dt = output(cli(
+        at,
+        &[
+            "--db",
+            "p44.db",
+            "desktop",
+            "create",
+            "--workspace",
+            ws_id,
+            "--name",
+            "Terminal",
+            "--role",
+            "dev",
+        ],
+    ));
+    let dt_id = dt["id"].as_str().unwrap();
+
+    // 5. Archive desktop
+    let _ = output(cli(
+        at,
+        &["--db", "p44.db", "desktop", "archive", dt_id, "--version", "1"],
+    ));
+    let dt_active = output(cli(
+        at,
+        &["--db", "p44.db", "desktop", "list", "--workspace", ws_id],
+    ));
+    assert_eq!(dt_active.as_array().unwrap().len(), 0);
+
+    let dt_archived = output(cli(
+        at,
+        &[
+            "--db",
+            "p44.db",
+            "desktop",
+            "list",
+            "--workspace",
+            ws_id,
+            "--archived",
+        ],
+    ));
+    assert_eq!(dt_archived.as_array().unwrap().len(), 1);
+
+    // 6. Restore desktop
+    let _ = output(cli(
+        at,
+        &["--db", "p44.db", "desktop", "restore", dt_id, "--version", "2"],
+    ));
+    let dt_restored = output(cli(
+        at,
+        &["--db", "p44.db", "desktop", "list", "--workspace", ws_id],
+    ));
+    assert_eq!(dt_restored.as_array().unwrap().len(), 1);
+
+    // 7. Preferences CLI
+    let _ = output(cli(
+        at,
+        &[
+            "--db",
+            "p44.db",
+            "preferences",
+            "set",
+            "presentation.reduced_motion",
+            "true",
+        ],
+    ));
+    let pref = output(cli(
+        at,
+        &[
+            "--db",
+            "p44.db",
+            "preferences",
+            "get",
+            "presentation.reduced_motion",
+        ],
+    ));
+    assert_eq!(pref["value"], "true");
+
+    let all_prefs = output(cli(at, &["--db", "p44.db", "preferences", "list"]));
+    assert!(all_prefs.as_array().unwrap().len() >= 1);
+
+    // 8. Project inspection CLI
+    let inspection = output(cli(at, &["project", "inspect", at.to_str().unwrap()]));
+    assert_eq!(inspection["exists"], true);
+    assert_eq!(inspection["isDirectory"], true);
+    assert_eq!(inspection["isAbsolute"], true);
+}
+
+#[test]
+fn phase_4_4_cli_manage_exec_and_conflict() {
+    let temp = tempfile::tempdir().unwrap();
+    let at = temp.path();
+
+    // Initialize db
+    let _ = output(cli(at, &["--db", "manage.db", "init"]));
+
+    // Create World via manage exec
+    let create_world_req = serde_json::json!({
+        "operationId": "op-1",
+        "action": "create",
+        "entity": "world",
+        "payload": {
+            "name": "ManageWorld",
+            "description": "Via JSON",
+            "visualIdentity": "neon-amber",
+            "artwork": "cyber-city"
+        }
+    });
+    let world_resp = output(cli(
+        at,
+        &[
+            "--db",
+            "manage.db",
+            "manage",
+            "exec",
+            "--request",
+            &create_world_req.to_string(),
+        ],
+    ));
+    assert_eq!(world_resp["success"], true);
+    let world_id = world_resp["id"].as_str().unwrap();
+
+    // Stale update (expectedVersion: 999) -> Conflict, exit code 4
+    let stale_req = serde_json::json!({
+        "operationId": "op-stale",
+        "action": "update",
+        "entity": "world",
+        "id": world_id,
+        "expectedVersion": 999,
+        "payload": {
+            "name": "StaleRename"
+        }
+    });
+    let stale_out = cli(
+        at,
+        &[
+            "--db",
+            "manage.db",
+            "manage",
+            "exec",
+            "--request",
+            &stale_req.to_string(),
+        ],
+    );
+    assert_eq!(stale_out.status.code(), Some(4));
+    let stale_json: Value = serde_json::from_slice(&stale_out.stdout).unwrap();
+    assert_eq!(stale_json["success"], false);
+    assert_eq!(stale_json["code"], "conflict");
+}

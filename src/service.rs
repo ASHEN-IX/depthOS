@@ -37,6 +37,18 @@ pub trait Store {
     fn list_preferences(&self) -> Result<Vec<(String, String)>> {
         Ok(Vec::new())
     }
+
+    fn desktop_association_count(&self, _desktop_id: DesktopId) -> Result<usize> {
+        Ok(0)
+    }
+
+    fn workspace_association_count(&self, _workspace_id: WorkspaceId) -> Result<usize> {
+        Ok(0)
+    }
+
+    fn world_association_count(&self, _world_id: WorldId) -> Result<usize> {
+        Ok(0)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -794,5 +806,17 @@ impl<S: Store> WorkspaceService<S> {
                 .set_preference("context.last_desktop_id", &id.0.to_string())?;
         }
         Ok(())
+    }
+
+    pub fn desktop_association_count(&self, desktop_id: DesktopId) -> Result<usize> {
+        self.store.desktop_association_count(desktop_id)
+    }
+
+    pub fn workspace_association_count(&self, workspace_id: WorkspaceId) -> Result<usize> {
+        self.store.workspace_association_count(workspace_id)
+    }
+
+    pub fn world_association_count(&self, world_id: WorldId) -> Result<usize> {
+        self.store.world_association_count(world_id)
     }
 }

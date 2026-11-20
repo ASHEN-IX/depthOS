@@ -12,6 +12,8 @@ CyberCard {
     property int identityIndex: 0
     property bool cameraFocused: false
     property color identityTone: NeonTheme.cyan
+    property int referenceTier: 0
+    property bool referenceStyle: false
     property var customCategories: []
     readonly property string category: Appearance.category(world, identityIndex)
     readonly property string worldName: Display.safeText(world ? world.name : "World")
@@ -20,7 +22,8 @@ CyberCard {
     implicitHeight: 260
     radius: 20
     available: !(world && world.unavailable)
-    openTarget: card.isSelected && card.width >= 350 ? indicator : null
+    strongGlow: referenceStyle
+    openTarget: card.isSelected && indicator.visible ? indicator : null
     accessibleLabel: worldName
     accessibleDescription: Display.countLabel(workspaces.length, "workspace", "workspaces") + ", "
         + Display.countLabel(desktopCount, "logical desktop", "logical desktops")
@@ -28,7 +31,7 @@ CyberCard {
     Item {
         id: art
         anchors.fill: parent
-        anchors.margins: 6
+        anchors.margins: card.referenceStyle ? 3 : 6
         Image {
             id: custom
             anchors.fill: parent
@@ -66,23 +69,32 @@ CyberCard {
         }
     }
 
-    Row {
-        x: 17
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 15
-        spacing: 11
-        width: parent.width - 34
+    NeonRim {
+        anchors.fill: parent
+        visible: card.referenceStyle
+        radius: card.radius
+        tone: card.isSelected ? NeonTheme.emerald : card.identityTone
+        bright: card.isSelected
+        lowEffects: card.lowEffects || card.highContrast
+    }
 
-        NeonText {
-            width: 30
+    Row {
+        x: card.referenceStyle ? (card.referenceTier >= 2 ? 48 : 29) : 17
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: card.referenceStyle ? 23 : 15
+        spacing: 11
+        width: parent.width - (card.referenceStyle ? 54 : 34)
+
+        SpatialIcon {
+            width: card.referenceStyle ? 42 : 30
+            height: width
             anchors.verticalCenter: parent.verticalCenter
-            text: Appearance.symbol(card.category)
-            color: card.isSelected ? NeonTheme.emerald : NeonTheme.text
-            font.pixelSize: 28
+            name: Appearance.icon(card.category)
+            ink: NeonTheme.text
         }
         Column {
             spacing: 4
-            width: parent.width - 41 - (indicator.visible ? 44 : 0)
+            width: parent.width - (card.referenceStyle ? 53 : 41) - (indicator.visible ? indicator.width + 11 : 0)
             NeonText {
                 width: parent.width
                 text: card.worldName
@@ -96,18 +108,19 @@ CyberCard {
                 text: Display.countLabel(card.workspaces.length, "workspace", "workspaces") + "  ·  "
                     + Display.countLabel(card.desktopCount, "desktop", "desktops")
                 color: NeonTheme.precision
-                font.pixelSize: 12
+                font.pixelSize: card.referenceStyle ? 14 : 12
                 elide: Text.ElideRight
             }
         }
         Rectangle {
             id: indicator
-            width: 32
-            height: 32
+            width: card.referenceStyle ? 42 : 32
+            height: width
             anchors.verticalCenter: parent.verticalCenter
-            radius: 16
+            radius: width / 2
             visible: (card.isSelected && card.width >= 350) || !card.available
-            color: NeonTheme.background
+            color: card.referenceStyle ? NeonTheme.deepTeal : NeonTheme.background
+            border.width: card.referenceStyle ? 2 : 1
             border.color: card.available ? NeonTheme.emerald : NeonTheme.danger
             NeonText {
                 anchors.centerIn: parent

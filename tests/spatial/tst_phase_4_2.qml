@@ -42,7 +42,9 @@ Item {
             compare(backend.selectedWorldId, "world-security");
             compare(scene.carouselIndex, 0);
             wait(120);
-            compare(card.mapToItem(scene, card.width / 2, card.height / 2), first);
+            const settled = card.mapToItem(scene, card.width / 2, card.height / 2);
+            verify(Math.abs(settled.x - first.x) < 0.01 && Math.abs(settled.y - first.y) < 0.01,
+                   "The projected hit target stays within the same physical pixel");
             mouseDoubleClickSequence(scene, first.x, first.y);
             compare(scene.currentLevel, 2);
             compare(backend.selectedWorldId, "world-security");
@@ -113,6 +115,34 @@ Item {
             compare(neighbor.visible, size.w >= 740);
             keyClick(Qt.Key_Right);
             compare(backend.selectedWorldId, "world-security");
+        }
+
+        function test_reference_catalog_and_live_chrome() {
+            root.width = 1672;
+            root.height = 941;
+            backend.loadReferenceDemo();
+            compare(backend.selectedWorldId, "reference-research");
+            compare(backend.worlds.length, 4);
+            compare(backend.workspaces.length, 12);
+            compare(backend.desktops.length, 36);
+            mouseClick(findChild(scene, "railSettings"));
+            compare(findChild(scene, "controlCenter").isOpen, true);
+            keyClick(Qt.Key_Escape);
+            mouseClick(findChild(scene, "searchButton"));
+            compare(findChild(scene, "searchPalette").isOpen, true);
+            keyClick(Qt.Key_Escape);
+            mouseClick(findChild(scene, "topLevel3"));
+            compare(scene.currentLevel, 3);
+            mouseClick(findChild(scene, "railLevel1"));
+            compare(scene.currentLevel, 1);
+            const options = findChild(scene, "worldPreview-reference-research-2-options");
+            const preview = findChild(scene, "worldPreview-reference-research-2");
+            mouseClick(options);
+            tryCompare(preview, "optionsOpen", true);
+            keyClick(Qt.Key_Escape);
+            tryCompare(preview, "optionsOpen", false);
+            mouseClick(findChild(scene, "openWorldButton"));
+            compare(scene.currentLevel, 2);
         }
 
         function test_workspace_preview_selects_workspace_and_opens_matrix() {

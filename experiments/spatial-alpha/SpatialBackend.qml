@@ -1,5 +1,6 @@
 import QtQuick
 import "MockData.js" as MockData
+import "ReferenceDemo.js" as ReferenceDemo
 import "Presentation.js" as Display
 
 Item {
@@ -247,7 +248,14 @@ Item {
     }
 
     function loadMock() {
-        const mock = MockData.getMockData();
+        applyDemo(MockData.getMockData(), "");
+    }
+
+    function loadReferenceDemo() {
+        applyDemo(ReferenceDemo.catalog(), "reference-research");
+    }
+
+    function applyDemo(mock, initialWorldId) {
         worlds = mock.worlds;
         workspaces = mock.workspaces;
         desktops = mock.desktops;
@@ -267,7 +275,7 @@ Item {
         selectedWindowId = "";
 
         if (worlds.length > 0) {
-            selectWorld(worlds[0].id);
+            selectWorld(initialWorldId || worlds[0].id);
         }
     }
 }

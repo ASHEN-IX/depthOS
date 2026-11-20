@@ -3,6 +3,8 @@ import "theme"
 
 Column {
     id: heading
+    property int titleSize: 0
+    property int detailSize: 0
     property alias label: eyebrow.text
     property alias title: name.text
     property alias detail: subtitle.text
@@ -19,7 +21,7 @@ Column {
     NeonText {
         id: name
         width: parent.width
-        font.pixelSize: heading.width >= 700 ? NeonTheme.displaySize : 34
+        font.pixelSize: heading.titleSize || (heading.width >= 700 ? NeonTheme.displaySize : 34)
         font.weight: Font.DemiBold
         elide: Text.ElideRight
     }
@@ -29,7 +31,7 @@ Column {
         width: parent.width
         visible: text.length > 0
         color: NeonTheme.precision
-        font.pixelSize: NeonTheme.bodySize
+        font.pixelSize: heading.detailSize || NeonTheme.bodySize
         elide: Text.ElideRight
     }
 }

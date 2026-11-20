@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import stat
 import subprocess
@@ -366,7 +367,19 @@ def main():
     parser.add_argument("--screenshot", type=Path, help="PNG of this window via grabWindow (or DEPTHOS_SCREENSHOT)")
     parser.add_argument("--world-art", metavar="CATEGORY=PATH", action="append", default=[],
                         help="Override a World artwork category with a bounded local PNG, JPEG, or WebP")
+    parser.add_argument("--reference-demo", action="store_true",
+                        help="Open the built-in reference catalog with Research selected")
+    parser.add_argument("--window-size", metavar="WIDTHxHEIGHT",
+                        help="Set the initial size of the DepthOS window in logical pixels")
     args = parser.parse_args()
+    size = None
+    if args.window_size:
+        match = re.fullmatch(r"([1-9][0-9]{0,4})x([1-9][0-9]{0,4})", args.window_size)
+        if not match:
+            parser.error("--window-size expects two positive dimensions, for example 1672x941")
+        size = tuple(map(int, match.groups()))
+    if args.reference_demo and args.db is not None:
+        parser.error("--reference-demo and --db select different data sources")
     global DEPTHOS
     if args.depthos_bin:
         DEPTHOS = args.depthos_bin
@@ -438,6 +451,8 @@ def main():
         sys.exit(1)
 
     root = engine.rootObjects()[0]
+    if size:
+        root.resize(*size)
     backend = root.property("backend")
     scene = root.property("scene")
     if args.world_art:
@@ -648,8 +663,11 @@ def main():
         return True
 
     def choose_source(be, sc, db_path, allow_controller):
-        if args.mock:
-            be.loadMock()
+        if args.mock or args.reference_demo:
+            if args.reference_demo:
+                be.loadReferenceDemo()
+            else:
+                be.loadMock()
             be.setProperty("onboardingState", "hidden")
             if sc:
                 sc.syncIndices()

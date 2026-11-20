@@ -1,90 +1,69 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import "theme"
 
-Rectangle {
+SpatialGlass {
     id: rail
     required property var scene
-    radius: 22
-    color: scene.highContrast ? NeonTheme.contrastPanel : NeonTheme.glass
-    border.color: scene.highContrast ? NeonTheme.muted : NeonTheme.strongBorder
-
-    component RailButton: NeonButton {
-        id: control
-        property string glyph
-        contentItem: Item {
-            Column {
-                anchors.centerIn: parent
-                spacing: 3
-                NeonText {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: control.glyph
-                    color: control.highlighted ? NeonTheme.emerald : NeonTheme.precision
-                    font.pixelSize: 17
-                }
-                NeonText {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: control.text
-                    color: control.enabled ? NeonTheme.text : NeonTheme.muted
-                    font.pixelSize: NeonTheme.detailSize
-                }
-            }
-        }
-    }
+    radius: 25
+    highContrast: scene.highContrast
+    rim: NeonTheme.tint(NeonTheme.cyan, 0.41)
 
     Column {
+        id: buttons
         anchors.fill: parent
-        anchors.margins: 8
-        spacing: 9
+        anchors.topMargin: rail.height * 0.08
+        anchors.bottomMargin: rail.height * 0.05
+        anchors.leftMargin: 3
+        anchors.rightMargin: 8
+        spacing: 3
 
-        RailButton {
-            width: parent.width
-            height: 58
-            glyph: "◉"
-            text: "Worlds"
-            highlighted: rail.scene.currentLevel === 1
-            onClicked: rail.scene.navigateBreadcrumb(1)
-        }
-        RailButton {
-            width: parent.width
-            height: 58
-            glyph: "▤"
-            text: "Workspaces"
-            highlighted: rail.scene.currentLevel === 2
-            enabled: rail.scene.currentLevel > 1 || !!rail.scene.backend?.currentWorld
-            onClicked: {
-                if (rail.scene.currentLevel === 1)
-                    rail.scene.enterDeeper();
-                else
-                    rail.scene.navigateBreadcrumb(2);
-                rail.scene.forceActiveFocus();
+        Repeater {
+            model: [
+                { label: "Worlds", icon: "home" },
+                { label: "Workspaces", icon: "layers" },
+                { label: "Desktops", icon: "desktop" },
+                { label: "Search", icon: "search" },
+                { label: "Settings", icon: "settings" }
+            ]
+            delegate: ChromeAction {
+                id: action
+                required property var modelData
+                required property int index
+                objectName: index === 3 ? "railSearch" : index === 4 ? "railSettings" : "railLevel" + (index + 1)
+                text: modelData.label
+                iconName: modelData.icon
+                lowEffects: rail.scene.lowEffects || rail.scene.highContrast
+                width: buttons.width
+                height: (buttons.height - 4 * buttons.spacing) / 5
+                highlighted: rail.scene.currentLevel === index + 1
+                enabled: index > 2 || rail.scene.canNavigateLevel(index + 1)
+                contentItem: Item {
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 8
+                        SpatialIcon {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            name: action.iconName
+                            width: Math.min(30, action.height * 0.36); height: width
+                        }
+                        NeonText {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: action.text
+                            color: action.enabled ? NeonTheme.text : NeonTheme.muted
+                            font.pixelSize: rail.width >= 111 ? 16 : 13
+                        }
+                    }
+                }
+                onClicked: {
+                    if (index === 3)
+                        rail.scene.openSearch();
+                    else if (index === 4)
+                        rail.scene.openControlCenter();
+                    else
+                        rail.scene.openLevel(index + 1);
+                }
             }
-        }
-        RailButton {
-            width: parent.width
-            height: 58
-            glyph: "▣"
-            text: "Desktops"
-            highlighted: rail.scene.currentLevel === 3
-            enabled: rail.scene.currentLevel >= 2 && rail.scene.currentDesktops.length > 0
-            onClicked: {
-                if (rail.scene.currentLevel === 2)
-                    rail.scene.enterDeeper();
-                rail.scene.forceActiveFocus();
-            }
-        }
-        RailButton {
-            width: parent.width
-            height: 58
-            glyph: "⌕"
-            text: "Search"
-            onClicked: rail.scene.openSearch()
-        }
-        RailButton {
-            width: parent.width
-            height: 58
-            glyph: "⊙"
-            text: "Settings"
-            onClicked: rail.scene.openControlCenter()
         }
     }
 }

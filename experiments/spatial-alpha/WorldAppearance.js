@@ -10,3 +10,7 @@ function category(world, index) {
 function symbol(category) {
     return symbols[Math.max(0, categories.indexOf(category))];
 }
+
+function icon(category) {
+    return category === "projects" ? "layers" : category;
+}

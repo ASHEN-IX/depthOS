@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import "theme"
 
@@ -7,6 +8,7 @@ Item {
     property bool isSelected: false
     property bool isFocused: false
     property bool motionOff: false
+    property bool strongGlow: false
     property bool lowEffects: false
     property bool highContrast: false
     property bool available: true
@@ -35,7 +37,17 @@ Item {
         color: NeonTheme.transparent
         border.color: card.accent
         border.width: 3
-        opacity: card.isFocused && !card.lowEffects && !card.highContrast ? NeonTheme.glowOpacity : 0
+        opacity: card.isFocused && !card.strongGlow && !card.lowEffects && !card.highContrast ? NeonTheme.glowOpacity : 0
+    }
+
+    Loader {
+        anchors.fill: parent
+        active: card.strongGlow && card.isSelected && !card.lowEffects && !card.highContrast
+        sourceComponent: NeonRim {
+            radius: card.radius
+            tone: card.accent
+            bright: true
+        }
     }
 
     Rectangle {

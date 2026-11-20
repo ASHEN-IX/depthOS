@@ -148,7 +148,7 @@ Rectangle {
         NeonButton {
             objectName: "controlCenterButton"
             anchors.verticalCenter: parent.verticalCenter
-            text: header.width < 700 ? "Status" : "Control center"
+            text: "Settings"
             Accessible.name: "Spatial Control Center"
             onClicked: header.scene.openControlCenter()
         }

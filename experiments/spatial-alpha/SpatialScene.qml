@@ -624,6 +624,31 @@ Item {
             scene.forceActiveFocus();
     }
 
+    function canNavigateLevel(level) {
+        if (!backend)
+            return level === 1;
+        if (level === 2)
+            return !!backend.currentWorld && !backend.currentWorld.unavailable;
+        if (level === 3)
+            return canNavigateLevel(2) && !!backend.currentWorkspace && !backend.currentWorkspace.unavailable
+                && currentDesktops.length > 0;
+        return level === 1;
+    }
+
+    function openLevel(level) {
+        if (navigationBlocked() || !canNavigateLevel(level))
+            return;
+        while (currentLevel < level) {
+            const before = currentLevel;
+            drillDown(false);
+            if (currentLevel === before)
+                break;
+        }
+        if (currentLevel > level)
+            navigateBreadcrumb(level);
+        forceActiveFocus();
+    }
+
     function navigateBreadcrumb(level) {
         if (scene.navigationBlocked() || level > scene.currentLevel)
             return;
@@ -703,6 +728,7 @@ Item {
         lowEffects: scene.lowEffects
         highContrast: scene.highContrast
         level: scene.currentLevel
+        wide: scene.wideChrome
         drift: scene.motionOff ? 0 : scene.cameraX * 0.13 - scene.carouselIndex * 12
         Behavior on drift {
             NumberAnimation {
@@ -712,23 +738,34 @@ Item {
         }
     }
 
-    TelemetryHeader {
+    readonly property bool wideChrome: width >= 1160 && height >= 640
+
+    Loader {
         id: topBar
         width: parent.width
-        scene: scene
+        height: scene.wideChrome ? Math.round(scene.height * 0.09) : NeonTheme.hudHeight
+        sourceComponent: scene.wideChrome ? wideHeader : compactHeader
         enabled: !scene.navigationBlocked()
         z: 10
+    }
+    Component {
+        id: wideHeader
+        ReferenceHeader { scene: scene }
+    }
+    Component {
+        id: compactHeader
+        TelemetryHeader { scene: scene }
     }
 
     SpatialRail {
         id: navigationRail
         scene: scene
-        visible: scene.width >= 1160 && scene.height >= 600
+        visible: scene.wideChrome
         enabled: !scene.navigationBlocked()
-        x: 18
-        y: NeonTheme.hudHeight + 32
-        width: 122
-        height: 343
+        x: Math.round(scene.width * 0.018)
+        y: Math.round(scene.height * 0.134)
+        width: Math.round(scene.width * 0.078)
+        height: Math.round(scene.height * 0.607)
         z: 3
     }
 
@@ -736,9 +773,9 @@ Item {
         id: canvasViewport
         objectName: "canvasViewport"
         anchors.fill: parent
-        anchors.topMargin: NeonTheme.hudHeight
-        anchors.leftMargin: navigationRail.visible ? navigationRail.x + navigationRail.width + 12 : 0
-        anchors.bottomMargin: NeonTheme.footerHeight
+        anchors.topMargin: scene.wideChrome && scene.currentLevel === 1 ? Math.round(scene.height * 0.09) : NeonTheme.hudHeight
+        anchors.leftMargin: navigationRail.visible ? navigationRail.x + navigationRail.width : 0
+        anchors.bottomMargin: scene.wideChrome && scene.currentLevel === 1 ? Math.round(scene.height * 0.104) : NeonTheme.footerHeight
         enabled: !scene.navigationBlocked()
         clip: true
 
@@ -776,8 +813,20 @@ Item {
         }
     }
 
+    Loader {
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: parent.width
+        height: Math.round(scene.height * 0.117)
+        active: scene.wideChrome
+        enabled: !scene.navigationBlocked()
+        z: 9
+        sourceComponent: ReferenceFooter { scene: scene }
+    }
+
     Rectangle {
         id: bottomBar
+        visible: !scene.wideChrome
         anchors.bottom: parent.bottom
         width: parent.width
         height: NeonTheme.footerHeight
@@ -808,7 +857,7 @@ Item {
 
         NeonLabel {
             id: demoMark
-            objectName: "demoWatermark"
+            objectName: scene.wideChrome ? "" : "demoWatermark"
             anchors.right: readOnlyLabel.left
             anchors.rightMargin: 18
             anchors.verticalCenter: parent.verticalCenter

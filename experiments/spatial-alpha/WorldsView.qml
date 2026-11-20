@@ -12,13 +12,14 @@ LevelTransition {
     readonly property bool previews: width >= 630 && height >= 515
     readonly property int peripheral: compact ? 0 : width >= 1160 ? 2 : 1
     readonly property real cardWidth: compact ? Math.min(440, width - 2 * margin - 16)
-        : Math.min(450, Math.max(286, width * 0.325))
+        : Math.min(475, Math.max(286, width * 0.325))
     readonly property real deckTop: heading.y + heading.height + (compact ? 12 : 19)
     readonly property real deckBottom: summary.y - (compact ? 48 : 52)
     readonly property real cardHeight: Math.min(310, Math.max(120,
         (deckBottom - deckTop - (compact ? 5 : 20)) / NeonTheme.selectedScale))
     readonly property real spacing: cardWidth * 0.96
-    readonly property real heroCenter: (deckTop + deckBottom) / 2
+    readonly property real heroCenter: Math.max((deckTop + deckBottom) / 2,
+        deckBottom - cardHeight * NeonTheme.selectedScale / 2 - (compact ? 5 : 13))
     readonly property int selectedDesktops: scene.currentWorkspaces.reduce(
         (sum, ws) => sum + scene.backend.getDesktopsForWorkspace(ws.id).length, 0)
 

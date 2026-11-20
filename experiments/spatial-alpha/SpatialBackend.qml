@@ -90,6 +90,7 @@ Item {
             return "";
         let unassigned = 0;
         let unknown = 0;
+        const examples = [];
         for (const row of windows) {
             if (row.workspaceId !== workspaceId || row.desktopId)
                 continue;
@@ -97,8 +98,13 @@ Item {
                 ++unassigned;
             else if (row.assignment === "unknown")
                 ++unknown;
+            else
+                continue;
+            if (examples.length < 3)
+                examples.push(Display.safeText(row.appId) || "Unknown application");
         }
-        return unassigned + " Unassigned  ·  " + unknown + " Unknown";
+        const summary = unassigned + " Unassigned  ·  " + unknown + " Unknown";
+        return examples.length ? summary + "  ·  " + examples.join(", ") : summary;
     }
 
     property string selectedWorldId: ""

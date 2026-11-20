@@ -191,6 +191,7 @@ LevelTransition {
             NeonText {
                 objectName: "workspaceWindowSummary"
                 width: parent.width
+                wrapMode: Text.WordWrap
                 visible: text !== ""
                 color: NeonTheme.muted
                 text: view.scene.backend ? view.scene.backend.workspaceWindowSummary(view.scene.backend.selectedWorkspaceId) : ""

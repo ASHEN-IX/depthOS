@@ -120,7 +120,7 @@ LevelTransition {
 
                     Item {
                         width: parent.width
-                        height: desktopName.implicitHeight + desktopDetail.implicitHeight + 8
+                        height: desktopName.implicitHeight + (desktopDetail.text ? desktopDetail.implicitHeight + 8 : 0)
                         NeonText {
                             id: desktopName
                             width: Math.max(0, parent.width - observer.width - 12)
@@ -149,10 +149,13 @@ LevelTransition {
                             text: {
                                 if (!view.desktop)
                                     return "";
-                                if (view.backend && !view.backend.isDemo && view.backend.shelfFreshness === "live")
-                                    return Display.countLabel(view.scene.currentWindows.length, "verified window", "verified windows") + "  ·  Titles withheld";
-                                const native = Display.safeText(view.desktop.nativeDesktopName || view.desktop.nativeDesktopId);
                                 const role = Display.safeText(view.desktop.role);
+                                if (view.backend && !view.backend.isDemo) {
+                                    return view.backend.shelfFreshness === "live"
+                                        ? Display.countLabel(view.scene.currentWindows.length, "verified window", "verified windows") + "  ·  Titles withheld"
+                                        : role;
+                                }
+                                const native = Display.safeText(view.desktop.nativeDesktopName || view.desktop.nativeDesktopId);
                                 const observed = Display.safeText(view.desktop.observedAt);
                                 return [role, native ? "Native desktop · " + native : "No native association available", observed ? "Observed " + observed : ""].filter(Boolean).join("   ·   ");
                             }

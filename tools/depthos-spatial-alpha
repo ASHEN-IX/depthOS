@@ -195,9 +195,12 @@ def read_shelves(query, endpoint, hierarchy, revision, instance):
         reply = query(endpoint.GetDesktopShelves, dbus.UInt32(cursor), expected)
         data = reply["data"]
         freshness = data["freshness"]
-        if (reply["instanceId"] != instance or data["hierarchyRevision"] != revision
+        if ((expected and reply["revision"] != expected) or reply["instanceId"] != instance
+                or data["hierarchyRevision"] != revision
                 or data["titlePolicy"] != "withheld"):
             raise ValueError("Incompatible shelf projection")
+        if type(reply["available"]) is not bool:
+            raise ValueError("Invalid shelf availability")
         items, next_cursor = data["items"], data["nextCursor"]
         if not reply["available"]:
             if cursor or items or next_cursor is not None or freshness not in ("stale", "unavailable"):
@@ -249,7 +252,7 @@ def read_controller(owner, previous=None, scopes=7):
             if remaining <= 0:
                 raise TimeoutError("Controller read timed out")
             reply = json.loads(str(method(*args, timeout=remaining)))
-            if reply.get("schemaVersion") != 1:
+            if type(reply.get("schemaVersion")) is not int or reply["schemaVersion"] != 1:
                 raise ValueError("Unsupported controller reply")
             return reply
 

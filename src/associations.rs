@@ -232,3 +232,120 @@ pub(crate) fn reconcile(
     result.sort_unstable_by_key(|evidence| evidence.row.id);
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        context::{ContextCoordinator, Selection},
+        service::{Change, Store},
+        sqlite::SqliteStore,
+    };
+
+    #[test]
+    fn reconciliation_rejects_wrong_generation_epoch_and_workspace() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("db");
+        let mut store = SqliteStore::open(&path).unwrap();
+        let world = crate::domain::WorldId(Uuid::new_v4());
+        let workspace = WorkspaceId(Uuid::new_v4());
+        let other = WorkspaceId(Uuid::new_v4());
+        let desktop = DesktopId(Uuid::new_v4());
+        store
+            .apply(Change::CreateWorld(world, "World".into(), None))
+            .unwrap();
+        for (id, name) in [(workspace, "Workspace"), (other, "Other")] {
+            store
+                .apply(Change::CreateWorkspace(id, world, name.into(), None, None))
+                .unwrap();
+        }
+        store
+            .apply(Change::CreateDesktop(
+                desktop,
+                workspace,
+                "Desktop".into(),
+                None,
+            ))
+            .unwrap();
+
+        let native = Uuid::new_v4().to_string();
+        let parsed: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/observer-adapter/trace.json")).unwrap();
+        let mut state: crate::observed::NativeState =
+            serde_json::from_value(parsed["frames"][0]["state"].clone()).unwrap();
+        let id = state.windows[0].runtime_id.clone();
+        state.windows[0].on_all_desktops = Some(false);
+        state.windows[0].desktop_ids = Some(vec![native.clone()]);
+        state.desktops = Some(vec![crate::observed::Desktop {
+            id: native.clone(),
+            native_id: Some(native.clone()),
+            name: None,
+        }]);
+        let mut snapshot = ObservedSnapshot {
+            observer_epoch: Uuid::new_v4().to_string(),
+            window_generations: BTreeMap::from([(id, Uuid::new_v4().to_string())]),
+            schema_version: 1,
+            session_id: "fixture-session".into(),
+            sequence: 2,
+            revision: 2,
+            state,
+        };
+        let hierarchy = store.tree().unwrap();
+        let mut context = ContextCoordinator::new();
+        context
+            .synchronize_from(Some(&hierarchy), Some(Ok(&snapshot)))
+            .unwrap();
+        let mut report = context.current_report(Selection::All);
+        let mut rule = Rule {
+            kind: RuleKind::NativeDesktop,
+            key: native,
+            workspace,
+            desktop: Some(desktop),
+        };
+        let original = reconcile(&hierarchy, std::slice::from_ref(&rule), &report, &snapshot);
+        assert_eq!(original.len(), 1);
+        assert_eq!(original[0].row.desktop_id, Some(desktop));
+        let encoded = serde_json::to_value(&original[0].row).unwrap();
+        let mut unsolicited = encoded.clone();
+        unsolicited
+            .as_object_mut()
+            .unwrap()
+            .insert("title".into(), serde_json::json!("private"));
+        assert!(serde_json::from_value::<ShelfRow>(unsolicited).is_err());
+        assert_eq!(
+            serde_json::from_value::<ShelfRow>(encoded).unwrap(),
+            original[0].row
+        );
+
+        report.associations[0].decision.status = Status::Confirmed;
+        report.associations[0].decision.targets = vec![other];
+        assert!(reconcile(&hierarchy, std::slice::from_ref(&rule), &report, &snapshot).is_empty());
+        report.associations[0].decision.targets = vec![workspace];
+        rule.desktop = None;
+        assert_eq!(
+            reconcile(&hierarchy, std::slice::from_ref(&rule), &report, &snapshot)[0]
+                .row
+                .assignment,
+            Assignment::Unassigned
+        );
+        snapshot.state.windows[0].on_all_desktops = Some(true);
+        assert_eq!(
+            reconcile(&hierarchy, std::slice::from_ref(&rule), &report, &snapshot)[0]
+                .row
+                .assignment,
+            Assignment::Unknown
+        );
+        snapshot.state.windows[0].on_all_desktops = Some(false);
+        rule.desktop = Some(desktop);
+        report.associations[0].decision.status = Status::Unknown;
+        report.associations[0].decision.targets.clear();
+        rule.workspace = other;
+        assert!(reconcile(&hierarchy, std::slice::from_ref(&rule), &report, &snapshot).is_empty());
+        rule.workspace = workspace;
+        snapshot.observer_epoch = Uuid::new_v4().to_string();
+        assert!(reconcile(&hierarchy, std::slice::from_ref(&rule), &report, &snapshot).is_empty());
+        snapshot.observer_epoch = report.version.observation.observer_epoch.clone();
+        report.associations[0].window.generation = Uuid::new_v4().to_string();
+        assert!(reconcile(&hierarchy, &[rule], &report, &snapshot).is_empty());
+    }
+}

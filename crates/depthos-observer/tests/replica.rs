@@ -65,6 +65,32 @@ fn duplicate_does_not_roll_back() {
     assert_eq!(r.snapshot().unwrap().sequence, seq);
 }
 #[test]
+fn duplicate_and_out_of_order_window_events_preserve_the_newest_state() {
+    let mut replica = ready();
+    let frames = trace();
+    let first = frames["frames"][1].clone();
+    let latest = frames["frames"][2].clone();
+    let current = packet(vec![first.clone(), latest.clone()]);
+    assert!(!replica.push(&current.to_string()).unwrap());
+    let before = replica.snapshot().unwrap();
+    let mut stale = first;
+    stale["window"]["applicationId"] = json!("org.example.Older");
+    assert!(!replica.push(&packet(vec![latest]).to_string()).unwrap());
+    assert!(!replica.push(&packet(vec![stale]).to_string()).unwrap());
+    let after = replica.snapshot().unwrap();
+    assert_eq!(after.sequence, before.sequence);
+    assert_eq!(after.window_generations, before.window_generations);
+    assert_eq!(
+        after.state.windows[0].application_id,
+        before.state.windows[0].application_id
+    );
+    assert_eq!(
+        after.state.windows[0].desktop_ids,
+        before.state.windows[0].desktop_ids
+    );
+}
+
+#[test]
 fn gaps_recover_only_with_snapshot() {
     for key in ["sequence", "revision"] {
         let mut r = ready();

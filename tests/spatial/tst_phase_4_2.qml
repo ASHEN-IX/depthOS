@@ -91,6 +91,40 @@ Item {
             verify(counts.mapToItem(card, 0, counts.height).y <= card.height - 8);
         }
 
+        function test_worlds_responsive_controls_bounds_data() {
+            return [{ w: 1920, h: 1080 }, { w: 1440, h: 900 }, { w: 1366, h: 768 },
+                    { w: 1024, h: 768 }, { w: 800, h: 600 }, { w: 630, h: 470 }];
+        }
+
+        function test_worlds_responsive_controls_bounds(size) {
+            root.width = size.w;
+            root.height = size.h;
+            const paging = findChild(scene, "worldPaging");
+            const open = findChild(scene, "openWorldButton");
+            const card = findChild(scene, "worldCard-world-engineering");
+            const neighbor = findChild(scene, "worldCard-world-security");
+            for (const item of [paging, open, card]) {
+                verify(item.visible, item.objectName);
+                const top = item.mapToItem(scene, 0, 0);
+                const bottom = item.mapToItem(scene, item.width, item.height);
+                verify(top.x >= 0 && top.y >= 0 && bottom.x <= size.w && bottom.y <= size.h,
+                       item.objectName + " remains inside the viewport");
+            }
+            compare(neighbor.visible, size.w >= 740);
+            keyClick(Qt.Key_Right);
+            compare(backend.selectedWorldId, "world-security");
+        }
+
+        function test_workspace_preview_selects_workspace_and_opens_matrix() {
+            const preview = findChild(scene, "worldPreview-ws-spatial-ux");
+            verify(preview && preview.visible);
+            mouseClick(preview);
+            compare(scene.currentLevel, 2);
+            compare(backend.selectedWorkspaceId, "ws-spatial-ux");
+            scene.returnToParent();
+            compare(backend.selectedWorkspaceId, "ws-spatial-ux");
+        }
+
         function test_workspace_rows_follow_viewport_columns() {
             const base = backend.currentWorkspace;
             backend.workspaces = backend.workspaces.concat(

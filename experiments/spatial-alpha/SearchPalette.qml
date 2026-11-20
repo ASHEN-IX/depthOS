@@ -81,14 +81,14 @@ FocusScope {
         }
     }
 
-    Rectangle {
+    SpatialGlass {
         id: panel
         anchors.centerIn: parent
         width: Math.min(670, parent.width - 32)
         height: Math.min(446, parent.height - 44)
         radius: NeonTheme.cardRadius
-        color: palette.highContrast ? NeonTheme.contrastPanel : NeonTheme.panel
-        border.color: NeonTheme.cyan
+        highContrast: palette.highContrast
+        rim: NeonTheme.cyan
         border.width: 1
         clip: true
 
@@ -102,11 +102,12 @@ FocusScope {
             Item {
                 width: parent.width
                 height: 30
-                NeonLabel {
+                NeonText {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "NAVIGATE HIERARCHY"
-                    color: NeonTheme.cyan
+                    text: "Search hierarchy"
+                    font.pixelSize: 21
+                    font.weight: Font.DemiBold
                 }
                 NeonButton {
                     anchors.right: parent.right

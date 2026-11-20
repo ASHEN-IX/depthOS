@@ -59,9 +59,21 @@ CyberCard {
             border.color: NeonTheme.border
             border.width: 1
 
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: 2
+                radius: NeonTheme.buttonRadius
+                visible: !card.lowEffects && !card.highContrast && !card.protectedIdentity
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0; color: NeonTheme.tint(NeonTheme.cyan, .14) }
+                    GradientStop { position: 1; color: NeonTheme.transparent }
+                }
+            }
+
             NeonText {
                 anchors.centerIn: parent
-                text: card.protectedIdentity ? "◇" : "▱"
+                text: card.protectedIdentity ? "◇" : Array.from(card.appIdentity).slice(0, 2).join("").toUpperCase()
                 color: card.protectedIdentity ? NeonTheme.muted : NeonTheme.cyan
                 font.pixelSize: 35
             }

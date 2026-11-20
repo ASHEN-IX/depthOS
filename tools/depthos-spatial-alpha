@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -285,6 +286,50 @@ def apply_controller_health(backend, health, hierarchy_available):
     backend.setProperty("observationHealth", observation_health)
 
 
+def load_world_artwork(overrides):
+    """Decode explicit local artwork once, within fixed input and texture limits."""
+    from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QSize, Qt
+    from PyQt6.QtGui import QImageReader
+
+    categories = {"projects", "research", "social", "focus"}
+    max_bytes = 8 * 1024 * 1024
+    images = {}
+    for override in overrides:
+        category, separator, filename = override.partition("=")
+        if not separator or category not in categories or not filename or category in images:
+            raise ValueError("Expected one CATEGORY=PATH override per projects, research, social, or focus")
+        try:
+            fd = os.open(Path(filename).expanduser(), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+                    raise ValueError(f"{category} artwork must be a regular file up to 8 MiB")
+                data = source.read(max_bytes + 1)
+        except OSError as exc:
+            raise ValueError(f"{category} artwork could not be opened as a local file") from exc
+        if len(data) > max_bytes:
+            raise ValueError(f"{category} artwork exceeds 8 MiB")
+        device = QBuffer()
+        device.setData(QByteArray(data))
+        device.open(QIODevice.OpenModeFlag.ReadOnly)
+        reader = QImageReader(device)
+        if bytes(reader.format()) not in (b"jpeg", b"png", b"webp"):
+            raise ValueError(f"{category} artwork needs a PNG, JPEG, or WebP")
+        size = reader.size()
+        if (not size.isValid()
+                or size.width() > 4096 or size.height() > 4096
+                or size.width() * size.height() > 4_194_304):
+            raise ValueError(f"{category} artwork exceeds the decode limit")
+        texture_bound = QSize(640, 384)
+        if size.width() > texture_bound.width() or size.height() > texture_bound.height():
+            reader.setScaledSize(size.scaled(texture_bound, Qt.AspectRatioMode.KeepAspectRatio))
+        image = reader.read()
+        if image.isNull():
+            raise ValueError(f"{category} artwork could not be decoded")
+        images[category] = image
+    return images
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="DepthOS Spatial Workspace Alpha Standalone Viewport"
@@ -319,6 +364,8 @@ def main():
     parser.add_argument("--frame-log", type=Path, help="JSONL frame timings (or DEPTHOS_FRAME_LOG). Own window only.")
     parser.add_argument("--memory-log", type=Path, help="JSONL RSS/PSS samples (or DEPTHOS_MEMORY_LOG)")
     parser.add_argument("--screenshot", type=Path, help="PNG of this window via grabWindow (or DEPTHOS_SCREENSHOT)")
+    parser.add_argument("--world-art", metavar="CATEGORY=PATH", action="append", default=[],
+                        help="Override a World artwork category with a bounded local PNG, JPEG, or WebP")
     args = parser.parse_args()
     global DEPTHOS
     if args.depthos_bin:
@@ -341,9 +388,10 @@ def main():
 
     # Import PyQt6
     try:
-        from PyQt6.QtCore import QUrl, QTimer, QObject, Qt, pyqtSignal, pyqtSlot
+        from PyQt6.QtCore import QFileDevice, QIODevice, QSaveFile, QUrl, QTimer, QObject, Qt, pyqtSignal, pyqtSlot
         from PyQt6.QtGui import QGuiApplication
         from PyQt6.QtQml import QQmlApplicationEngine
+        from PyQt6.QtQuick import QQuickWindow
         from PyQt6.QtDBus import QDBusConnection, QDBusServiceWatcher
     except ImportError as e:
         sys.stderr.write(f"depthos-spatial-alpha: PyQt6 is required but could not be imported: {e}\n")
@@ -361,6 +409,23 @@ def main():
     sigint_timer.start(250)
 
     engine = QQmlApplicationEngine()
+    if args.world_art:
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtGui import QImage
+        from PyQt6.QtQuick import QQuickImageProvider
+
+        try:
+            artwork = load_world_artwork(args.world_art)
+        except ValueError as exc:
+            parser.error(str(exc))
+
+        class ArtworkProvider(QQuickImageProvider):
+            def requestImage(self, name, _requested_size):
+                image = artwork.get(name)
+                return (image, image.size()) if image is not None else (QImage(), QSize())
+
+        engine.addImageProvider("world-art", ArtworkProvider(QQuickImageProvider.ImageType.Image))
+
 
     if not QML_FILE.exists():
         sys.stderr.write(f"depthos-spatial-alpha: QML file not found: {QML_FILE}\n")
@@ -375,6 +440,8 @@ def main():
     root = engine.rootObjects()[0]
     backend = root.property("backend")
     scene = root.property("scene")
+    if args.world_art:
+        backend.setProperty("customWorldArtwork", list(artwork))
 
     if scene.metaObject().indexOfProperty("pointerSelectionDelay") >= 0:
         scene.setProperty("pointerSelectionDelay", app.styleHints().mouseDoubleClickInterval() + 30)
@@ -624,7 +691,6 @@ def main():
             window.frameSwapped.connect(self.on_swap)
             info = {"kind": "renderer", "synthetic": False}
             try:
-                from PyQt6.QtQuick import QQuickWindow
                 quick = window if isinstance(window, QQuickWindow) else None
                 if quick is None:
                     from PyQt6 import sip
@@ -717,15 +783,23 @@ def main():
         engine.memory_probe = memory_probe
 
     def capture():
-        if not args.screenshot or scene is None:
-            return
-        # Own scene only. QQuickWindow.grabWindow() is not used: on this
-        # session the root object is exposed as QWindow and that call aborted.
         try:
+            if not isinstance(root, QQuickWindow):
+                raise RuntimeError("the own-window surface is unavailable")
             args.screenshot.parent.mkdir(parents=True, exist_ok=True)
-            destination = json.dumps(str(args.screenshot))
-            callback = engine.evaluate(f"(function(result) {{ result.saveToFile({destination}); }})")
-            scene.grabToImage(callback)
+            image = root.grabWindow()
+            output = QSaveFile(str(args.screenshot))
+            if image.isNull() or not output.open(QIODevice.OpenModeFlag.WriteOnly):
+                raise RuntimeError("could not capture the window or open the output file")
+            try:
+                permissions = QFileDevice.Permission.ReadOwner | QFileDevice.Permission.WriteOwner
+                if not output.setPermissions(permissions) or not image.save(output, "PNG"):
+                    raise RuntimeError("could not write a private PNG")
+                if not output.commit():
+                    raise RuntimeError("could not save the PNG")
+            finally:
+                if output.isOpen():
+                    output.cancelWriting()
         except Exception as exc:
             sys.stderr.write(f"depthos-spatial-alpha: screenshot failed: {exc}\n")
 
@@ -733,19 +807,7 @@ def main():
         delay = 700
         if args.quit_after_ms > 0:
             delay = max(250, min(700, args.quit_after_ms - 400))
-        def capture_and_chmod():
-            try:
-                capture()
-            except Exception as exc:
-                sys.stderr.write(f"depthos-spatial-alpha: screenshot failed: {exc}\n")
-            def tighten():
-                try:
-                    if args.screenshot.exists() and args.screenshot.stat().st_size > 0:
-                        os.chmod(args.screenshot, 0o600)
-                except Exception as exc:
-                    sys.stderr.write(f"depthos-spatial-alpha: screenshot chmod failed: {exc}\n")
-            QTimer.singleShot(250, tighten)
-        QTimer.singleShot(delay, capture_and_chmod)
+        QTimer.singleShot(delay, capture)
     if args.quit_after_ms > 0:
         def shutdown():
             if memory_probe:

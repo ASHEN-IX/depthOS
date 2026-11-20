@@ -40,7 +40,7 @@ FocusScope {
         }
     }
 
-    Rectangle {
+    SpatialGlass {
         id: panel
         width: Math.min(490, parent.width - 30)
         height: Math.min(content.implicitHeight + 42, parent.height - 40)
@@ -49,8 +49,8 @@ FocusScope {
         anchors.rightMargin: 15
         anchors.topMargin: Math.min(NeonTheme.hudHeight + 12, parent.height - height - 12)
         radius: NeonTheme.cardRadius
-        color: overlay.scene.highContrast ? NeonTheme.contrastPanel : NeonTheme.panel
-        border.color: NeonTheme.cyan
+        highContrast: overlay.scene.highContrast
+        rim: NeonTheme.cyan
         border.width: 1
         clip: true
 

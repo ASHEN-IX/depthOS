@@ -10,17 +10,32 @@ CyberCard {
     property int observedWindowCount: -1
     property string statusBadge: "Unavailable"
     property string freshness: ""
+    property int ordinal: 0
+    readonly property color categoryTone: ordinal % 2 ? NeonTheme.cyan : NeonTheme.lavender
     property bool demoSource: false
     readonly property string name: Display.safeText(workspace ? workspace.name : "Workspace")
     readonly property string directory: Display.safeText(workspace ? workspace.rootDirectory : "")
     readonly property string branch: Display.safeText(workspace ? workspace.gitBranch : "")
 
     implicitWidth: 380
-    implicitHeight: 228
+    implicitHeight: 224
     radius: 14
     available: !(workspace && workspace.unavailable)
     accessibleLabel: name
     accessibleDescription: Display.countLabel(desktops.length, "logical desktop", "logical desktops")
+
+    Rectangle {
+        x: 4
+        y: 4
+        width: parent.width - 8
+        height: 96
+        radius: card.radius - 3
+        visible: !card.lowEffects && !card.highContrast
+        gradient: Gradient {
+            GradientStop { position: 0; color: NeonTheme.tint(card.categoryTone, 0.18) }
+            GradientStop { position: 1; color: NeonTheme.transparent }
+        }
+    }
 
     Column {
         anchors.fill: parent
@@ -35,13 +50,13 @@ CyberCard {
                 width: 36
                 height: width
                 radius: NeonTheme.buttonRadius
-                color: NeonTheme.tint(NeonTheme.violet, 0.14)
-                border.color: NeonTheme.tint(NeonTheme.violet, 0.48)
+                color: NeonTheme.tint(card.categoryTone, 0.18)
+                border.color: NeonTheme.tint(card.categoryTone, 0.58)
                 NeonText {
                     anchors.centerIn: parent
-                    color: NeonTheme.lavender
+                    color: card.categoryTone
                     font.pixelSize: 20
-                    text: "◫"
+                    text: ["▤", "◫", "◇", "▥"][card.ordinal % 4]
                 }
             }
 

@@ -12,6 +12,8 @@ Window {
     property bool reducedMotion: false
     property alias backend: spatialBackend
     property alias scene: spatialScene
+    // Set by the Python launcher. Null in qmltestrunner; QML must not require it.
+    property var hostBridge: null
 
     SpatialBackend {
         id: spatialBackend
@@ -25,6 +27,18 @@ Window {
 
         onClosed: {
             rootWindow.close();
+        }
+    }
+
+    Connections {
+        target: spatialBackend
+        function onCreateWorkspaceRequested() {
+            if (rootWindow.hostBridge)
+                rootWindow.hostBridge.createWorkspace();
+        }
+        function onRetryRequested() {
+            if (rootWindow.hostBridge)
+                rootWindow.hostBridge.retryProbe();
         }
     }
 

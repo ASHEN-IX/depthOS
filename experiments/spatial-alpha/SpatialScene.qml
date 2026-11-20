@@ -1,8 +1,11 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 
-FocusScope {
+Item {
     id: scene
+    // Item, not FocusScope: activeFocus must mean "the canvas owns the keys".
+    // A FocusScope would stay activeFocus while the search field or a modal
+    // inside it is focused, and restoration would look like a focus steal.
     focus: true
     clip: true
 
@@ -37,25 +40,34 @@ FocusScope {
     // Privacy redaction toggle for window titles
     property bool showTitles: false
 
-    // Camera viewport coordinates for spatial panning & zoom
+    // Camera viewport coordinates for spatial panning & zoom.
+    // Wheel and keyboard pans write these directly. A Behavior here would
+    // queue one wheel notch behind an animation and double-count with the
+    // next event, so camera motion is immediate. Level changes still animate
+    // opacity and scale, and those honor reduced motion.
     property real cameraX: 0
     property real cameraY: 0
     property real currentScale: scene.currentLevel === 1 ? 0.90 : (scene.currentLevel === 2 ? 1.0 : 1.08)
 
+    // One counted hierarchy transition per Enter, double-click, ctrl-wheel
+    // step, or latched pinch. Window cycling at level C does not count.
+    property int levelTransitions: 0
+
+    // 120 angle-delta units (one traditional notch, or eight 15-unit hi-res
+    // steps) move the camera by this many pixels. pixelDelta is used as-is
+    // and is never added on top of angleDelta from the same event.
+    readonly property real wheelStepPx: 96
+    readonly property int levelStepCooldownMs: 320
+    property real lastLevelStepMs: -1e15
+    property int wheelEventsHandled: 0
+
+    property bool pinchActive: false
+    property bool pinchLatched: false
+    property real pinchX: 0
+    property real pinchY: 0
+
     signal closed
 
-    Behavior on cameraX {
-        NumberAnimation {
-            duration: scene.motionOff ? 0 : 280
-            easing.type: Easing.OutCubic
-        }
-    }
-    Behavior on cameraY {
-        NumberAnimation {
-            duration: scene.motionOff ? 0 : 280
-            easing.type: Easing.OutCubic
-        }
-    }
     Behavior on currentScale {
         NumberAnimation {
             duration: scene.motionOff ? 0 : 320
@@ -127,9 +139,278 @@ FocusScope {
         }
     }
 
+    function onboardingOpen() {
+        return !!(scene.backend && scene.backend.onboardingState && scene.backend.onboardingState !== "hidden");
+    }
+
+    function navigationBlocked() {
+        return searchPalette.isOpen || scene.onboardingOpen();
+    }
+
+    function setLevel(next) {
+        if (next === scene.currentLevel)
+            return false;
+        scene.currentLevel = next;
+        scene.cameraX = 0;
+        scene.cameraY = 0;
+        scene.levelTransitions += 1;
+        scene.syncIndices();
+        return true;
+    }
+
+    function resetInteractionClocks() {
+        scene.lastLevelStepMs = -1e15;
+        scene.pinchActive = false;
+        scene.pinchLatched = false;
+    }
+
+    function activeColumn() {
+        if (scene.currentLevel === 2)
+            return levelBColumn;
+        if (scene.currentLevel === 3)
+            return levelCColumn;
+        return levelAColumn;
+    }
+
+    function panLimitFor(length, viewport) {
+        if (!length || !viewport)
+            return 0;
+        return Math.max(0, (length * scene.currentScale - viewport) / 2);
+    }
+
+    function panLimitX() {
+        const item = scene.activeColumn();
+        return item ? scene.panLimitFor(item.width, canvasViewport.width) : 0;
+    }
+
+    function panLimitY() {
+        const item = scene.activeColumn();
+        return item ? scene.panLimitFor(item.height, canvasViewport.height) : 0;
+    }
+
+    function clampPan(value, limit) {
+        return Math.max(-limit, Math.min(limit, value));
+    }
+
+    function panBy(dx, dy) {
+        scene.cameraX = scene.clampPan(scene.cameraX + dx, scene.panLimitX());
+        scene.cameraY = scene.clampPan(scene.cameraY + dy, scene.panLimitY());
+    }
+
+    // angle* are in eighths of a degree (120 = one notch). pixel* are device
+    // pixels from the same Qt wheel event. When pixelDelta is non-zero it
+    // already describes that event, so angleDelta is ignored.
+    function handleWheel(angleX, angleY, pixelX, pixelY, modifiers) {
+        if (scene.navigationBlocked())
+            return;
+        scene.wheelEventsHandled += 1;
+        const mod = modifiers || 0;
+        const hasPixel = pixelX !== 0 || pixelY !== 0;
+        let dx = hasPixel ? pixelX : (angleX / 120) * scene.wheelStepPx;
+        let dy = hasPixel ? pixelY : (angleY / 120) * scene.wheelStepPx;
+        if (mod & Qt.ControlModifier) {
+            const delta = hasPixel ? (pixelY !== 0 ? pixelY : pixelX) : (angleY !== 0 ? angleY : angleX);
+            if (delta > 0)
+                scene.stepHierarchy(1);
+            else if (delta < 0)
+                scene.stepHierarchy(-1);
+            return;
+        }
+        if (mod & Qt.ShiftModifier) {
+            dx += dy;
+            dy = 0;
+        }
+        scene.panBy(dx, dy);
+    }
+
+    function stepHierarchy(direction) {
+        if (scene.navigationBlocked())
+            return;
+        const now = Date.now();
+        if (now - scene.lastLevelStepMs < scene.levelStepCooldownMs)
+            return;
+        scene.lastLevelStepMs = now;
+        if (direction > 0)
+            scene.drillDown(false);
+        else
+            scene.drillUp(false);
+    }
+
+    // Synthetic pinch entry points. A real PinchHandler calls the same
+    // functions when the compositor delivers a gesture. Delivery on this
+    // KWin session is not assumed; see docs/phase-4-1-1-ux-corrections.md.
+    function pinchBegin(x, y) {
+        scene.pinchActive = false;
+        scene.pinchLatched = false;
+        if (scene.navigationBlocked())
+            return;
+        scene.pinchActive = true;
+        scene.pinchX = x;
+        scene.pinchY = y;
+    }
+
+    function pinchUpdate(scale) {
+        if (!scene.pinchActive || scene.pinchLatched)
+            return;
+        if (scale >= 1.25) {
+            scene.pinchLatched = true;
+            scene.focusCardAt(scene.pinchX, scene.pinchY);
+            scene.drillDown(false);
+        } else if (scale <= 0.75) {
+            scene.pinchLatched = true;
+            scene.focusCardAt(scene.pinchX, scene.pinchY);
+            scene.drillUp(false);
+        }
+    }
+
+    function pinchEnd(cancelled) {
+        if (cancelled)
+            scene.pinchLatched = true;
+        scene.pinchActive = false;
+    }
+
+    function cancelGestures() {
+        scene.pinchActive = false;
+        scene.pinchLatched = true;
+    }
+
+    function findNamed(name) {
+        function walk(node) {
+            if (!node)
+                return null;
+            if (node.objectName === name)
+                return node;
+            const kids = node.children;
+            for (let i = 0; i < kids.length; ++i) {
+                const found = walk(kids[i]);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        return walk(scene);
+    }
+
+    function focusCardAt(x, y) {
+        if (!scene.backend)
+            return;
+        let prefix = "windowCard-";
+        let list = scene.currentWindows;
+        if (scene.currentLevel === 1) {
+            prefix = "worldCard-";
+            list = scene.currentWorlds;
+        } else if (scene.currentLevel === 2) {
+            prefix = "workspaceCard-";
+            list = scene.currentWorkspaces;
+        }
+        for (let i = 0; i < list.length; ++i) {
+            const card = scene.findNamed(prefix + list[i].id);
+            if (!card || card.available === false)
+                continue;
+            const p = card.mapFromItem(scene, x, y);
+            if (p.x < 0 || p.y < 0 || p.x > card.width || p.y > card.height)
+                continue;
+            if (scene.currentLevel === 1) {
+                scene.worldIndex = i;
+                scene.backend.selectWorld(list[i].id);
+            } else if (scene.currentLevel === 2) {
+                scene.workspaceIndex = i;
+                scene.backend.selectWorkspace(list[i].id);
+            } else {
+                scene.windowIndex = i;
+                scene.backend.selectWindow(list[i].id);
+            }
+            return;
+        }
+    }
+
+    function focusedCard() {
+        if (!scene.backend)
+            return null;
+        if (scene.currentLevel === 1 && scene.currentWorlds.length > 0)
+            return scene.findNamed("worldCard-" + scene.currentWorlds[scene.worldIndex].id);
+        if (scene.currentLevel === 2 && scene.currentWorkspaces.length > 0)
+            return scene.findNamed("workspaceCard-" + scene.currentWorkspaces[scene.workspaceIndex].id);
+        if (scene.currentLevel === 3 && scene.currentWindows.length > 0)
+            return scene.findNamed("windowCard-" + scene.currentWindows[scene.windowIndex].id);
+        return null;
+    }
+
+    function revealFocusedCard() {
+        const card = scene.focusedCard();
+        if (!card || card.width <= 0)
+            return;
+        const p = card.mapToItem(canvasViewport, 0, 0);
+        let dx = 0;
+        let dy = 0;
+        if (p.x < 0)
+            dx = -p.x;
+        else if (p.x + card.width > canvasViewport.width)
+            dx = canvasViewport.width - (p.x + card.width);
+        if (p.y < 0)
+            dy = -p.y;
+        else if (p.y + card.height > canvasViewport.height)
+            dy = canvasViewport.height - (p.y + card.height);
+        if (dx !== 0 || dy !== 0)
+            scene.panBy(dx, dy);
+    }
+
+    function isTextEntry(item) {
+        return !!(item && item.hasOwnProperty("inputMethodComposing") && item.hasOwnProperty("cursorPosition"));
+    }
+
+    function itemInside(item, ancestor) {
+        let node = item;
+        while (node) {
+            if (node === ancestor)
+                return true;
+            node = node.parent;
+        }
+        return false;
+    }
+
+    // Called after the window becomes active again. Restores canvas keys when
+    // focus has drifted to a non-editing item, and leaves search, rename, and
+    // modal controls alone.
+    function restoreFocusAfterActivation() {
+        const win = scene.Window.window;
+        const item = win ? win.activeFocusItem : null;
+        if (scene.onboardingOpen()) {
+            if (!scene.itemInside(item, onboardingPanel))
+                onboardingPanel.forceActiveFocus();
+            return;
+        }
+        if (searchPalette.isOpen) {
+            if (!scene.itemInside(item, searchPalette))
+                searchPalette.focusInput();
+            return;
+        }
+        if (scene.isTextEntry(item))
+            return;
+        if (!scene.activeFocus)
+            scene.forceActiveFocus();
+    }
+
+    function workspaceSourceBadge() {
+        const b = scene.backend;
+        if (!b)
+            return "Unavailable";
+        if (b.sourceKind === "demo" || b.mockMode)
+            return "Demo";
+        if (!b.observerLive) {
+            if (b.observationHealth === "Stale" || b.observationHealth === "Reconnecting")
+                return b.observationHealth;
+            return "Unavailable";
+        }
+        const health = b.observationHealth || "Unavailable";
+        if (health === "Live" || health === "Stale" || health === "Reconnecting" || health === "Unavailable" || health === "Unknown")
+            return health;
+        return "Unavailable";
+    }
+
     // Keyboard-First Interaction Actions:
     function moveHorizontal(delta) {
-        if (searchPalette.isOpen)
+        if (scene.navigationBlocked())
             return;
 
         if (scene.currentLevel === 1) {
@@ -151,10 +432,11 @@ FocusScope {
                 scene.backend.selectWindow(scene.currentWindows[scene.windowIndex].id);
             }
         }
+        scene.revealFocusedCard();
     }
 
     function moveVertical(delta) {
-        if (searchPalette.isOpen)
+        if (scene.navigationBlocked())
             return;
 
         if (scene.currentLevel === 1) {
@@ -172,12 +454,17 @@ FocusScope {
     }
 
     function enterDeeper() {
-        if (searchPalette.isOpen)
+        scene.drillDown(true);
+    }
+
+    function drillDown(cycleWindows) {
+        if (scene.navigationBlocked() || !scene.backend)
             return;
 
         if (scene.currentLevel === 1) {
-            // World -> Workspace Overview (preserve selection if already in world)
-            scene.currentLevel = 2;
+            if (scene.currentWorlds.length === 0)
+                return;
+            scene.setLevel(2);
             if (scene.currentWorkspaces.length > 0) {
                 const existingIdx = scene.currentWorkspaces.findIndex(ws => ws.id === scene.backend.selectedWorkspaceId);
                 if (existingIdx >= 0) {
@@ -189,22 +476,18 @@ FocusScope {
             } else {
                 scene.workspaceIndex = 0;
             }
-            scene.syncIndices();
         } else if (scene.currentLevel === 2) {
-            // Workspace -> Logical Desktop Overview (preserve selection if already in workspace)
-            if (scene.currentDesktops.length > 0) {
-                scene.currentLevel = 3;
-                const existingIdx = scene.currentDesktops.findIndex(d => d.id === scene.backend.selectedDesktopId);
-                if (existingIdx >= 0) {
-                    scene.desktopIndex = existingIdx;
-                } else {
-                    scene.desktopIndex = 0;
-                    scene.backend.selectDesktop(scene.currentDesktops[0].id);
-                }
-                scene.syncIndices();
+            if (scene.currentDesktops.length === 0)
+                return;
+            scene.setLevel(3);
+            const existingIdx = scene.currentDesktops.findIndex(d => d.id === scene.backend.selectedDesktopId);
+            if (existingIdx >= 0) {
+                scene.desktopIndex = existingIdx;
+            } else {
+                scene.desktopIndex = 0;
+                scene.backend.selectDesktop(scene.currentDesktops[0].id);
             }
-        } else if (scene.currentLevel === 3) {
-            // Desktop -> Window Focus cycle
+        } else if (scene.currentLevel === 3 && cycleWindows) {
             if (scene.currentWindows.length > 0) {
                 scene.windowIndex = (scene.windowIndex + 1) % scene.currentWindows.length;
                 scene.backend.selectWindow(scene.currentWindows[scene.windowIndex].id);
@@ -212,26 +495,25 @@ FocusScope {
         }
     }
 
+    function drillUp(allowClose) {
+        if (scene.navigationBlocked())
+            return;
+        if (scene.currentLevel > 1)
+            scene.setLevel(scene.currentLevel - 1);
+        else if (allowClose)
+            scene.closed();
+    }
+
     function returnToParent() {
         if (searchPalette.isOpen) {
-            searchPalette.isOpen = false;
-            scene.forceActiveFocus();
+            searchPalette.dismiss();
             return;
         }
-
-        if (scene.currentLevel === 3) {
-            scene.currentLevel = 2; // Desktop -> Workspace
-            scene.syncIndices();
-        } else if (scene.currentLevel === 2) {
-            scene.currentLevel = 1; // Workspace -> World
-            scene.syncIndices();
-        } else if (scene.currentLevel === 1) {
-            scene.closed();
-        }
+        scene.drillUp(true);
     }
 
     function returnHome() {
-        if (searchPalette.isOpen)
+        if (scene.navigationBlocked())
             return;
         scene.cameraX = 0;
         scene.cameraY = 0;
@@ -239,11 +521,13 @@ FocusScope {
     }
 
     function openSearch() {
+        if (scene.onboardingOpen())
+            return;
         searchPalette.isOpen = true;
     }
 
     Keys.onPressed: event => {
-        if (searchPalette.isOpen)
+        if (scene.navigationBlocked())
             return;
 
         if (event.key === Qt.Key_Escape) {
@@ -428,16 +712,39 @@ FocusScope {
                 }
             }
 
+            Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 0
+
+                Text {
+                    objectName: "sourceLabel"
+                    textFormat: Text.PlainText
+                    text: scene.backend ? scene.backend.sourceLabel : "No Source"
+                    color: scene.backend && scene.backend.isDemo ? "#C4B5FD" : "#E2E8F0"
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                }
+
+                Text {
+                    objectName: "observerLabel"
+                    textFormat: Text.PlainText
+                    text: scene.backend ? scene.backend.observerLabel : "Native Observer Unavailable"
+                    color: scene.backend && scene.backend.observerLive ? "#22C55E" : "#94A3B8"
+                    font.pixelSize: 10
+                }
+            }
+
             StatusBadge {
                 anchors.verticalCenter: parent.verticalCenter
                 status: scene.backend ? scene.backend.observationHealth : "Unavailable"
-                detail: scene.backend ? scene.backend.state : "Offline"
+                detail: scene.backend ? (scene.backend.observerDetail || scene.backend.state) : "Offline"
             }
         }
     }
 
     Item {
         id: canvasViewport
+        objectName: "canvasViewport"
         anchors.fill: parent
         anchors.topMargin: 70
         anchors.bottomMargin: 50
@@ -472,6 +779,7 @@ FocusScope {
                 }
 
                 Column {
+                    id: levelAColumn
                     anchors.centerIn: parent
                     spacing: 24
 
@@ -496,6 +804,7 @@ FocusScope {
                                 id: worldDelegate
                                 required property var modelData
                                 required property int index
+                                objectName: "worldCard-" + worldDelegate.modelData.id
 
                                 world: worldDelegate.modelData
                                 workspaces: scene.backend ? scene.backend.getWorkspacesForWorld(worldDelegate.modelData.id) : []
@@ -504,12 +813,30 @@ FocusScope {
                                 motionOff: scene.motionOff
 
                                 onChosen: {
+                                    if (!worldDelegate.available)
+                                        return;
+                                    scene.worldIndex = worldDelegate.index;
+                                    scene.backend.selectWorld(worldDelegate.modelData.id);
+                                }
+                                onActivated: {
+                                    if (!worldDelegate.available)
+                                        return;
                                     scene.worldIndex = worldDelegate.index;
                                     scene.backend.selectWorld(worldDelegate.modelData.id);
                                     scene.enterDeeper();
                                 }
                             }
                         }
+                    }
+
+                    Text {
+                        objectName: "emptyHierarchyHint"
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        visible: scene.currentWorlds.length === 0
+                        textFormat: Text.PlainText
+                        text: "No worlds in this workspace yet."
+                        color: "#94A3B8"
+                        font.pixelSize: 15
                     }
                 }
             }
@@ -527,6 +854,7 @@ FocusScope {
                 }
 
                 Column {
+                    id: levelBColumn
                     anchors.centerIn: parent
                     spacing: 20
 
@@ -580,6 +908,7 @@ FocusScope {
                                 id: wsDelegate
                                 required property var modelData
                                 required property int index
+                                objectName: "workspaceCard-" + wsDelegate.modelData.id
 
                                 workspace: wsDelegate.modelData
                                 desktops: scene.backend ? scene.backend.getDesktopsForWorkspace(wsDelegate.modelData.id) : []
@@ -593,12 +922,20 @@ FocusScope {
                                     }
                                     return count;
                                 }
-                                statusBadge: (wsDelegate.index === 1 ? "Stale" : "Live")
+                                statusBadge: scene.workspaceSourceBadge()
                                 isSelected: scene.backend && scene.backend.selectedWorkspaceId === wsDelegate.modelData.id
                                 isFocused: scene.workspaceIndex === wsDelegate.index && scene.currentLevel === 2
                                 motionOff: scene.motionOff
 
                                 onChosen: {
+                                    if (!wsDelegate.available)
+                                        return;
+                                    scene.workspaceIndex = wsDelegate.index;
+                                    scene.backend.selectWorkspace(wsDelegate.modelData.id);
+                                }
+                                onActivated: {
+                                    if (!wsDelegate.available)
+                                        return;
                                     scene.workspaceIndex = wsDelegate.index;
                                     scene.backend.selectWorkspace(wsDelegate.modelData.id);
                                     scene.enterDeeper();
@@ -631,6 +968,7 @@ FocusScope {
                 }
 
                 Column {
+                    id: levelCColumn
                     anchors.centerIn: parent
                     width: parent.width - 64
                     spacing: 16
@@ -726,6 +1064,7 @@ FocusScope {
                                 id: winDelegate
                                 required property var modelData
                                 required property int index
+                                objectName: "windowCard-" + winDelegate.modelData.id
 
                                 window: winDelegate.modelData
                                 isSelected: scene.backend && scene.backend.selectedWindowId === winDelegate.modelData.id
@@ -734,6 +1073,14 @@ FocusScope {
                                 motionOff: scene.motionOff
 
                                 onChosen: {
+                                    if (!winDelegate.available)
+                                        return;
+                                    scene.windowIndex = winDelegate.index;
+                                    scene.backend.selectWindow(winDelegate.modelData.id);
+                                }
+                                onActivated: {
+                                    if (!winDelegate.available)
+                                        return;
                                     scene.windowIndex = winDelegate.index;
                                     scene.backend.selectWindow(winDelegate.modelData.id);
                                 }
@@ -751,26 +1098,18 @@ FocusScope {
                         border.color: "#26354D"
                         border.width: 1
 
-                        Column {
+                        Text {
+                            id: emptyWindowsHint
+                            objectName: "emptyWindowsHint"
                             anchors.centerIn: parent
-                            spacing: 8
-
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                textFormat: Text.PlainText
-                                text: "No native windows observed in this logical desktop"
-                                color: "#94A3B8"
-                                font.pixelSize: 14
-                                font.weight: Font.Medium
-                            }
-
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                textFormat: Text.PlainText
-                                text: "Windows will appear here when launched or associated"
-                                color: "#64748B"
-                                font.pixelSize: 11
-                            }
+                            width: parent.width - 48
+                            wrapMode: Text.WordWrap
+                            horizontalAlignment: Text.AlignHCenter
+                            textFormat: Text.PlainText
+                            text: (scene.backend && scene.backend.observerLive) ? "No native windows are associated with this logical desktop." : "Native observer unavailable. This desktop cannot list windows until a read-only observer is connected."
+                            color: "#94A3B8"
+                            font.pixelSize: 14
+                            font.weight: Font.Medium
                         }
                     }
                 }
@@ -789,31 +1128,226 @@ FocusScope {
         border.width: 1
         z: 10
 
-        Row {
+        Text {
+            id: hintText
             anchors.left: parent.left
             anchors.leftMargin: 24
+            anchors.right: readOnlyLabel.left
+            anchors.rightMargin: 16
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 16
-
-            Text {
-                textFormat: Text.PlainText
-                text: "H/L: Siblings  ·  J/K: Rows/Desktops  ·  Enter: Zoom in  ·  Esc/Backspace: Zoom out  ·  /: Search  ·  Home: Reset  ·  T: Titles  ·  M: Motion"
-                color: "#94A3B8"
-                font.pixelSize: 11
-            }
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            text: "H/L: Siblings · J/K: Rows · Click: select · Double-click or Enter: open · Esc: back · Wheel: pan · Ctrl+wheel: depth · /: Search · Home · T: Titles · M: Motion"
+            color: "#94A3B8"
+            font.pixelSize: 11
         }
 
-        Row {
+        Text {
+            id: readOnlyLabel
             anchors.right: parent.right
             anchors.rightMargin: 24
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 12
+            textFormat: Text.PlainText
+            text: "Read-only · no window setters"
+            color: "#64748B"
+            font.pixelSize: 11
+        }
+    }
 
-            Text {
-                textFormat: Text.PlainText
-                text: "Read-only native integration · Zero window setters"
-                color: "#64748B"
-                font.pixelSize: 11
+    Text {
+        objectName: "demoWatermark"
+        z: 8
+        anchors.centerIn: parent
+        rotation: -18
+        textFormat: Text.PlainText
+        text: "DEMO DATA"
+        color: "#F8FAFC"
+        opacity: 0.16
+        font.pixelSize: 92
+        font.weight: Font.Black
+        visible: !!(scene.backend && scene.backend.isDemo)
+        enabled: false
+    }
+
+    FocusScope {
+        id: onboardingPanel
+        objectName: "onboardingPanel"
+        anchors.fill: parent
+        z: 90
+        visible: scene.onboardingOpen()
+        enabled: visible
+
+        readonly property string messageText: {
+            const b = scene.backend;
+            if (!b)
+                return "";
+            if (b.onboardingState === "offer") {
+                const lead = b.onboardingMessage ? b.onboardingMessage : "No workspace database was found.";
+                return lead + " " + b.databasePath + " Create a new persistent workspace or continue in Demo Mode. Nothing is written until you choose.";
+            }
+            if (b.onboardingState === "creating")
+                return b.onboardingMessage ? b.onboardingMessage : "Creating the workspace…";
+            if (b.onboardingState === "blocked")
+                return b.onboardingMessage ? b.onboardingMessage : "This database cannot be opened.";
+            return b.onboardingMessage ? b.onboardingMessage : "";
+        }
+        readonly property string detailText: scene.backend ? (scene.backend.onboardingDetail || "") : ""
+
+        onVisibleChanged: {
+            if (visible)
+                Qt.callLater(onboardingPanel.forceActiveFocus);
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#000000B0"
+            MouseArea {
+                anchors.fill: parent
+            }
+        }
+
+        Rectangle {
+            width: Math.min(640, parent.width - 80)
+            height: onboardingColumn.implicitHeight + 48
+            anchors.centerIn: parent
+            radius: 16
+            color: "#0F172A"
+            border.color: "#38BDF8"
+            border.width: 1.5
+
+            Column {
+                id: onboardingColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 24
+                spacing: 14
+
+                Text {
+                    width: parent.width
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    text: onboardingPanel.messageText
+                    color: "#F8FAFC"
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                }
+
+                Text {
+                    width: parent.width
+                    visible: onboardingPanel.detailText !== ""
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    text: onboardingPanel.detailText
+                    color: "#FCA5A5"
+                    font.pixelSize: 13
+                }
+
+                Flow {
+                    width: parent.width
+                    spacing: 10
+
+                    Rectangle {
+                        objectName: "createWorkspaceButton"
+                        property string text: "Create my workspace"
+                        visible: {
+                            const s = scene.backend ? scene.backend.onboardingState : "";
+                            return s === "offer" || s === "creating" || s === "error";
+                        }
+                        implicitWidth: createLabel.implicitWidth + 28
+                        implicitHeight: 36
+                        radius: 8
+                        color: "#1E293B"
+                        border.color: "#38BDF8"
+                        Text {
+                            id: createLabel
+                            anchors.centerIn: parent
+                            textFormat: Text.PlainText
+                            text: parent.text
+                            color: "#E2E8F0"
+                            font.pixelSize: 13
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: scene.backend.requestCreateWorkspace()
+                        }
+                    }
+
+                    Rectangle {
+                        objectName: "continueDemoButton"
+                        property string text: "Continue in Demo Mode"
+                        visible: {
+                            const s = scene.backend ? scene.backend.onboardingState : "";
+                            return s === "offer" || s === "error" || s === "blocked";
+                        }
+                        implicitWidth: demoLabel.implicitWidth + 28
+                        implicitHeight: 36
+                        radius: 8
+                        color: "#1E293B"
+                        border.color: "#6D28D9"
+                        Text {
+                            id: demoLabel
+                            anchors.centerIn: parent
+                            textFormat: Text.PlainText
+                            text: parent.text
+                            color: "#E2E8F0"
+                            font.pixelSize: 13
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: scene.backend.requestContinueDemo()
+                        }
+                    }
+
+                    Rectangle {
+                        objectName: "retryButton"
+                        property string text: "Try again"
+                        visible: {
+                            const s = scene.backend ? scene.backend.onboardingState : "";
+                            return s === "error" || s === "blocked";
+                        }
+                        implicitWidth: retryLabel.implicitWidth + 28
+                        implicitHeight: 36
+                        radius: 8
+                        color: "#1E293B"
+                        border.color: "#475569"
+                        Text {
+                            id: retryLabel
+                            anchors.centerIn: parent
+                            textFormat: Text.PlainText
+                            text: parent.text
+                            color: "#E2E8F0"
+                            font.pixelSize: 13
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: scene.backend.requestRetry()
+                        }
+                    }
+
+                    Rectangle {
+                        objectName: "openWorkspaceButton"
+                        property string text: "Open workspace"
+                        visible: scene.backend && scene.backend.onboardingState === "success"
+                        implicitWidth: openLabel.implicitWidth + 28
+                        implicitHeight: 36
+                        radius: 8
+                        color: "#1E293B"
+                        border.color: "#22C55E"
+                        Text {
+                            id: openLabel
+                            anchors.centerIn: parent
+                            textFormat: Text.PlainText
+                            text: parent.text
+                            color: "#E2E8F0"
+                            font.pixelSize: 13
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: scene.backend.dismissOnboarding()
+                        }
+                    }
+                }
             }
         }
     }
@@ -842,7 +1376,51 @@ FocusScope {
         }
 
         onClosed: {
-            scene.forceActiveFocus();
+            searchPalette.isOpen = false;
+            if (!scene.onboardingOpen())
+                scene.forceActiveFocus();
+        }
+    }
+
+    // One handler, so a single Qt wheel event cannot be applied twice.
+    WheelHandler {
+        id: wheelHandler
+        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        onWheel: event => {
+            scene.handleWheel(event.angleDelta.x, event.angleDelta.y, event.pixelDelta.x, event.pixelDelta.y, event.modifiers);
+        }
+    }
+
+    // Active only if KWin delivers a touchpad pinch to an ordinary Qt Quick
+    // window. Unattended runs cannot prove that; the probe is tools/depthos-gesture-probe.
+    PinchHandler {
+        id: pinchHandler
+        target: null
+        acceptedDevices: PointerDevice.TouchPad
+        onActiveChanged: {
+            if (active) {
+                scene.pinchBegin(pinchHandler.centroid.position.x, pinchHandler.centroid.position.y);
+            } else {
+                scene.pinchEnd(false);
+            }
+        }
+        onActiveScaleChanged: {
+            if (pinchHandler.active)
+                scene.pinchUpdate(pinchHandler.activeScale);
+        }
+    }
+
+    Connections {
+        target: scene.Window.window
+        function onActiveChanged() {
+            const win = scene.Window.window;
+            if (!win)
+                return;
+            if (!win.active) {
+                scene.cancelGestures();
+                return;
+            }
+            Qt.callLater(scene.restoreFocusAfterActivation);
         }
     }
 

@@ -28,6 +28,17 @@ FocusScope {
         }
     }
 
+    function dismiss() {
+        if (!isOpen)
+            return;
+        isOpen = false;
+        closed();
+    }
+
+    function focusInput() {
+        searchInput.forceActiveFocus();
+    }
+
     property var searchResults: (backend && isOpen) ? backend.search(searchInput.text) : []
     property int selectedIndex: 0
 
@@ -37,7 +48,7 @@ FocusScope {
         color: "#00000088"
         MouseArea {
             anchors.fill: parent
-            onClicked: searchScope.closed()
+            onClicked: searchScope.dismiss()
         }
     }
 
@@ -80,12 +91,13 @@ FocusScope {
 
                 TextInput {
                     id: searchInput
+                    objectName: "searchInput"
                     width: parent.width - 120
                     height: parent.height
                     verticalAlignment: TextInput.AlignVCenter
                     color: "#F8FAFC"
                     font.pixelSize: 15
-                    focus: true
+                    focus: searchScope.isOpen
                     clip: true
                     selectByMouse: true
 
@@ -104,7 +116,7 @@ FocusScope {
 
                     Keys.onPressed: event => {
                         if (event.key === Qt.Key_Escape) {
-                            searchScope.closed();
+                            searchScope.dismiss();
                             event.accepted = true;
                         } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Tab) {
                             if (searchScope.searchResults.length > 0) {

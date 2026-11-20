@@ -9,13 +9,16 @@ Rectangle {
     property bool isFocused: false
     property bool showTitles: false // Privacy redaction toggle
     property bool motionOff: false
+    readonly property bool available: !(card.window && card.window.unavailable)
 
     signal chosen
+    signal activated
 
     implicitWidth: 320
     implicitHeight: 220
     radius: 14
 
+    opacity: card.available ? 1 : 0.45
     color: card.isSelected ? "#1E293B" : "#131C2E"
     border.width: card.isSelected || card.isFocused ? 2.5 : 1
     border.color: card.isFocused ? "#38BDF8" : (card.isSelected ? "#818CF8" : "#2A3756")
@@ -256,6 +259,11 @@ Rectangle {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: card.chosen()
+        onClicked: if (card.available)
+            card.chosen()
+        // Window cards are read-only. A double-click selects; it never activates
+        // a native window and never changes the hierarchy level.
+        onDoubleClicked: if (card.available)
+            card.activated()
     }
 }

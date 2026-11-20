@@ -2,7 +2,7 @@ import QtQuick
 
 Rectangle {
     id: badge
-    property string status: "Unknown" // "Live" | "Stale" | "Reconnecting" | "Unavailable" | "Unknown"
+    property string status: "Unknown" // "Live" | "Stale" | "Reconnecting" | "Unavailable" | "Unknown" | "Demo"
     property bool compact: false
     property string detail: ""
 
@@ -21,6 +21,8 @@ Rectangle {
             return "#38BDF8";  // Cyan / Sky blue
         case "Unavailable":
             return "#64748B";   // Slate gray
+        case "Demo":
+            return "#C4B5FD";   // Sample data, never a live observation
         case "Unknown":
         default:
             return "#94A3B8";              // Muted slate
@@ -37,6 +39,8 @@ Rectangle {
             return "#082f49";
         case "Unavailable":
             return "#0f172a";
+        case "Demo":
+            return "#2e1064";
         case "Unknown":
         default:
             return "#1e293b";
@@ -53,6 +57,8 @@ Rectangle {
             return "#0284c7";
         case "Unavailable":
             return "#334155";
+        case "Demo":
+            return "#6D28D9";
         case "Unknown":
         default:
             return "#475569";

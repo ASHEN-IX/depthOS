@@ -4,10 +4,75 @@ import "MockData.js" as MockData
 Item {
     id: backend
 
-    property bool mockMode: true
-    property string state: "Demo Mode" // "Connected" | "Disconnected" | "Demo Mode" | "Loading" | "Degraded"
-    property string health: "Synchronized"
-    property string observationHealth: "Live"
+    // True ONLY while built-in sample data is loaded (see loadMock()).
+    property bool mockMode: false
+    property string state: "Detecting source" // "Connected" | "Database Mode" | "Demo Mode" | "Detecting source" | "Degraded"
+    property string health: "Unknown"
+    // Observation channel status: "Live" | "Stale" | "Reconnecting" | "Unavailable".
+    // It never defaults to Live; only a connected controller reporting a
+    // Synchronized observer may set it.
+    property string observationHealth: "Unavailable"
+
+    // --- Source provenance ---------------------------------------------------
+    // Where the displayed hierarchy comes from. Exactly one of:
+    //   "none" | "demo" | "sqlite" | "controller"
+    // A controller connection says nothing about native observation: that is
+    // the separate, independent observerLive flag.
+    property string sourceKind: "none"
+    property string sourceDetail: ""
+    property bool observerLive: false
+    property string observerDetail: ""
+    readonly property bool isDemo: sourceKind === "demo"
+    readonly property string sourceLabel: {
+        switch (sourceKind) {
+        case "demo":
+            return "Demo";
+        case "sqlite":
+            return "Local SQLite";
+        case "controller":
+            return "Connected Controller";
+        default:
+            return "No Source";
+        }
+    }
+    readonly property string observerLabel: observerLive ? "Native Observer Live" : "Native Observer Unavailable"
+
+    // --- First-run / onboarding state ---------------------------------------
+    // "hidden" | "offer" | "blocked" | "creating" | "success" | "error"
+    property string databasePath: ""
+    property string databaseState: ""
+    property string onboardingState: "hidden"
+    property string onboardingMessage: ""
+    property string onboardingDetail: ""
+
+    signal createWorkspaceRequested
+    signal continueDemoRequested
+    signal retryRequested
+
+    function requestCreateWorkspace() {
+        if (onboardingState !== "offer" && onboardingState !== "error")
+            return;
+        onboardingState = "creating";
+        createWorkspaceRequested();
+    }
+
+    function requestContinueDemo() {
+        if (onboardingState === "creating")
+            return;
+        loadMock();
+        onboardingState = "hidden";
+        continueDemoRequested();
+    }
+
+    function requestRetry() {
+        if (onboardingState === "creating")
+            return;
+        retryRequested();
+    }
+
+    function dismissOnboarding() {
+        onboardingState = "hidden";
+    }
 
     property var worlds: []
     property var workspaces: []
@@ -179,9 +244,14 @@ Item {
         workspaces = mock.workspaces;
         desktops = mock.desktops;
         windows = mock.windows;
+        mockMode = true;
+        sourceKind = "demo";
+        sourceDetail = "Built-in sample data, not your workspace";
+        observerLive = false;
+        observerDetail = "Demo data is simulated; nothing is observed from KWin";
         state = "Demo Mode";
-        health = "Synchronized";
-        observationHealth = "Live";
+        health = "Simulated";
+        observationHealth = "Unavailable";
         selectedWorldId = "";
         selectedWorkspaceId = "";
         selectedDesktopId = "";
@@ -190,9 +260,5 @@ Item {
         if (worlds.length > 0) {
             selectWorld(worlds[0].id);
         }
-    }
-
-    Component.onCompleted: {
-        loadMock();
     }
 }

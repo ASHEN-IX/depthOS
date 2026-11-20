@@ -4,6 +4,9 @@
 /build/
 /artifacts/*
 !/artifacts/phase-4-1/
+!/artifacts/phase-4-4/
+/artifacts/phase-4-4/*
+!/artifacts/phase-4-4/*.png
 __pycache__/
 
 /target/

@@ -1,5 +1,6 @@
 pub mod action_security;
 pub mod application;
+pub mod associations;
 pub mod context;
 pub mod controller;
 pub mod domain;

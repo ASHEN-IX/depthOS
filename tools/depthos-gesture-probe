@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""DepthOS gesture capability probe (Phase 4.1.1, DEF-08 / DEF-09).
+
+Opens a small ordinary Qt Quick window and records, as JSON lines, every
+pointer-related event an ordinary Qt Quick application receives from the
+compositor: wheel events (angleDelta / pixelDelta / phase / device type),
+QNativeGestureEvent (pinch zoom, rotate, swipe, smart-zoom) and touch events,
+plus the Qt Quick handler view of the same input (WheelHandler, PinchHandler,
+PointHandler).  It also reports the compositor globals relevant to touchpad
+gestures.
+
+It is strictly passive: it never injects input into the host session, never
+changes KDE gesture settings and never talks to KWin.
+
+Usage on a live Wayland session (human required to pinch / scroll):
+
+    ./tools/depthos-gesture-probe --duration-s 30 --log /tmp/gesture-probe.jsonl
+    # ... pinch with two fingers on the touchpad over the window, scroll, etc.
+    # A summary with a capability verdict is printed when the window closes.
+
+Self-test of the logging pipeline (SYNTHETIC events, never evidence of what the
+compositor delivers; every record is tagged "synthetic": true):
+
+    ./tools/depthos-gesture-probe --offscreen --synthetic-self-test
+"""
+import argparse
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from collections import Counter
+
+QML = r"""
+import QtQuick
+import QtQuick.Window
+
+Window {
+    id: win
+    width: 900
+    height: 560
+    visible: true
+    title: "DepthOS Gesture Probe"
+    color: "#0B1020"
+    property real shown: 1.0
+
+    Item {
+        id: surface
+        objectName: "surface"
+        anchors.fill: parent
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: 360 * win.shown
+            height: 220 * win.shown
+            radius: 16
+            color: "#1E293B"
+            border.color: "#38BDF8"
+            Text {
+                anchors.centerIn: parent
+                color: "#E2E8F0"
+                text: "Pinch / scroll here\nDepthOS gesture probe\nlogging only"
+                horizontalAlignment: Text.AlignHCenter
+            }
+        }
+
+        PinchHandler {
+            id: pinch
+            target: null
+            onActiveChanged: probe.log("handler.pinch.active", {active: active, scale: activeScale, rotation: activeRotation})
+            onActiveScaleChanged: if (active) {
+                win.shown = Math.max(0.5, Math.min(2.0, activeScale))
+                probe.log("handler.pinch.scale", {scale: activeScale, rotation: activeRotation})
+            }
+        }
+
+        WheelHandler {
+            id: wheel
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            onWheel: event => probe.log("handler.wheel", {
+                angleDeltaX: event.angleDelta.x, angleDeltaY: event.angleDelta.y,
+                pixelDeltaX: event.pixelDelta.x, pixelDeltaY: event.pixelDelta.y,
+                phase: event.phase, inverted: event.inverted,
+                device: String(event.device ? event.device.name : "")
+            })
+        }
+
+        PointHandler {
+            onActiveChanged: probe.log("handler.point.active", {active: active, points: point.id})
+        }
+    }
+}
+"""
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--log", help="JSONL output path (default: stdout)")
+    ap.add_argument("--duration-s", type=float, default=30.0, help="auto-close after N seconds (0 = until closed)")
+    ap.add_argument("--offscreen", action="store_true", help="offscreen QPA (no compositor; pipeline self-test only)")
+    ap.add_argument("--synthetic-self-test", action="store_true",
+                    help="send SYNTHETIC wheel/native-gesture events to verify the logging pipeline")
+    ap.add_argument("--summary-json", help="write the final summary JSON to this path")
+    args = ap.parse_args()
+
+    if args.offscreen:
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        os.environ["QT_QUICK_BACKEND"] = "software"
+    elif "WAYLAND_DISPLAY" in os.environ:
+        os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+
+    from PyQt6.QtCore import (QEvent, QObject, QPoint, QPointF, Qt, QTimer, QUrl,
+                              pyqtSlot, QCoreApplication)
+    from PyQt6.QtGui import (QGuiApplication, QNativeGestureEvent, QPointingDevice,
+                             QWheelEvent)
+    from PyQt6.QtQml import QQmlApplicationEngine
+
+    out = open(args.log, "w", buffering=1) if args.log else sys.stdout
+    if args.log:
+        os.chmod(args.log, 0o600)
+    counts = Counter()
+    state = {"synthetic": False, "start": time.monotonic()}
+
+    def emit(kind, data):
+        rec = {"t": round(time.monotonic() - state["start"], 4), "kind": kind,
+               "synthetic": state["synthetic"], **data}
+        counts[kind + (":synthetic" if state["synthetic"] else "")] += 1
+        out.write(json.dumps(rec, default=str) + "\n")
+
+    class Probe(QObject):
+        @pyqtSlot(str, "QVariant")
+        def log(self, kind, data):
+            emit(kind, dict(data.toVariant() if hasattr(data, "toVariant") else data))
+
+    app = QGuiApplication(sys.argv)
+    app.setApplicationName("DepthOS Gesture Probe")
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    keepalive = QTimer()
+    keepalive.timeout.connect(lambda: None)
+    keepalive.start(200)
+
+    probe = Probe()
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("probe", probe)
+    engine.loadData(QML.encode(), QUrl("probe.qml"))
+    if not engine.rootObjects():
+        sys.stderr.write("depthos-gesture-probe: failed to load QML\n")
+        return 1
+    win = engine.rootObjects()[0]
+
+    native_names = {
+        Qt.NativeGestureType.BeginNativeGesture: "begin",
+        Qt.NativeGestureType.EndNativeGesture: "end",
+        Qt.NativeGestureType.PanNativeGesture: "pan",
+        Qt.NativeGestureType.ZoomNativeGesture: "zoom",
+        Qt.NativeGestureType.SmartZoomNativeGesture: "smartZoom",
+        Qt.NativeGestureType.RotateNativeGesture: "rotate",
+        Qt.NativeGestureType.SwipeNativeGesture: "swipe",
+    }
+
+    class Filter(QObject):
+        def eventFilter(self, obj, ev):
+            try:
+                return self._filter(ev)
+            except Exception as exc:  # never let a logging bug abort the probe
+                emit("probe-error", {"error": repr(exc)})
+                return False
+
+        def _filter(self, ev):
+            t = ev.type()
+            if t == QEvent.Type.NativeGesture:
+                emit("native-gesture", {
+                    "gesture": native_names.get(ev.gestureType(), str(ev.gestureType())),
+                    "value": ev.value(), "fingers": ev.fingerCount(),
+                    "x": ev.position().x(), "y": ev.position().y(),
+                    "device": ev.device().name() if ev.device() else ""})
+            elif t == QEvent.Type.Wheel:
+                emit("wheel", {
+                    "angleDeltaX": ev.angleDelta().x(), "angleDeltaY": ev.angleDelta().y(),
+                    "pixelDeltaX": ev.pixelDelta().x(), "pixelDeltaY": ev.pixelDelta().y(),
+                    "phase": str(ev.phase()), "inverted": ev.inverted(),
+                    "deviceType": str(ev.device().type()) if ev.device() else "",
+                    "device": ev.device().name() if ev.device() else ""})
+            elif t in (QEvent.Type.TouchBegin, QEvent.Type.TouchUpdate, QEvent.Type.TouchEnd,
+                       QEvent.Type.TouchCancel):
+                emit("touch", {"type": str(t), "points": len(ev.points())})
+            elif t in (QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate,
+                       QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+                emit("lifecycle", {"type": str(t)})
+            return False
+
+    flt = Filter()
+    win.installEventFilter(flt)
+
+    # Environment / capability facts that do not need user input.
+    emit("env", {"platform": app.platformName(), "qt": __import__("PyQt6.QtCore", fromlist=["x"]).QT_VERSION_STR,
+                 "WAYLAND_DISPLAY": os.environ.get("WAYLAND_DISPLAY", ""),
+                 "XDG_SESSION_TYPE": os.environ.get("XDG_SESSION_TYPE", "")})
+    for dev in QPointingDevice.devices():
+        emit("device", {"name": dev.name(), "type": str(dev.type()),
+                        "caps": str(dev.capabilities()), "maxPoints": dev.maximumPoints()})
+    try:
+        info = subprocess.run(["wayland-info"], capture_output=True, text=True, timeout=5).stdout
+        gestures = [l.strip() for l in info.splitlines() if "pointer_gestures" in l and "interface" in l]
+        emit("wayland-globals", {"pointer_gestures": gestures})
+    except Exception as exc:  # wayland-info optional
+        emit("wayland-globals", {"error": str(exc)})
+
+    if args.synthetic_self_test:
+        def run_synthetic():
+            state["synthetic"] = True
+            dev = QPointingDevice.primaryPointingDevice()
+            pos = QPointF(450, 280)
+            for gesture, value in ((Qt.NativeGestureType.BeginNativeGesture, 0.0),
+                                   (Qt.NativeGestureType.ZoomNativeGesture, 0.2),
+                                   (Qt.NativeGestureType.ZoomNativeGesture, 0.1),
+                                   (Qt.NativeGestureType.EndNativeGesture, 0.0)):
+                QCoreApplication.sendEvent(win, QNativeGestureEvent(gesture, dev, 2, pos, pos, pos, value, QPointF(0, 0)))
+            QCoreApplication.sendEvent(win, QWheelEvent(
+                pos, pos, QPoint(0, 12), QPoint(0, 120), Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollUpdate, False))
+            state["synthetic"] = False
+            QTimer.singleShot(50, app.quit)
+        QTimer.singleShot(300, run_synthetic)
+    elif args.duration_s > 0:
+        QTimer.singleShot(int(args.duration_s * 1000), app.quit)
+
+    sys.stderr.write(f"[depthos-gesture-probe] pid={os.getpid()} platform={app.platformName()} "
+                     "— pinch/scroll over the window now (logging only).\n")
+    app.exec()
+
+    real_native = sum(v for k, v in counts.items() if k == "native-gesture")
+    real_zoom_handler = counts.get("handler.pinch.scale", 0)
+    real_wheel = counts.get("wheel", 0)
+    summary = {
+        "counts": dict(counts),
+        "native_gesture_events_real": real_native,
+        "pinch_handler_updates_real": real_zoom_handler,
+        "wheel_events_real": real_wheel,
+        "verdict_pinch": ("DELIVERED" if real_native or real_zoom_handler
+                          else "NOT-OBSERVED (no human pinch, or not delivered)"),
+        "note": "Synthetic events are counted under '*:synthetic' and prove nothing about the compositor.",
+    }
+    emit("summary", summary)
+    if args.summary_json:
+        with open(args.summary_json, "w") as fh:
+            json.dump(summary, fh, indent=2)
+        os.chmod(args.summary_json, 0o600)
+    if out is not sys.stdout:
+        out.close()
+    sys.stderr.write(json.dumps(summary, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

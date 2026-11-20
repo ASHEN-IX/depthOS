@@ -1,0 +1,620 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4697865..528758e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -3,6 +3,11 @@ cmake_minimum_required(VERSION 3.16)
+ set(PROJECT_VERSION "6.8.3") # Handled by release scripts
+ project(KWin VERSION ${PROJECT_VERSION})
+
++option(KWIN_DEPTHOS_AUTHORITY_EXPERIMENT "Build private virtual-only DepthOS observation experiment" OFF)
++if (KWIN_DEPTHOS_AUTHORITY_EXPERIMENT)
++    add_compile_definitions(KWIN_DEPTHOS_AUTHORITY_EXPERIMENT)
++endif()
++
+ set(CMAKE_C_STANDARD 99)
+ set(CMAKE_CXX_STANDARD 23)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index e9f7683..5b7fd1c 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -419,6 +419,13 @@ ecm_qt_declare_logging_category(kwin
+ )
+
+ add_executable(kwin_wayland main_wayland.cpp)
++if (KWIN_DEPTHOS_AUTHORITY_EXPERIMENT AND KWIN_BUILD_ACTIVITIES)
++    target_link_libraries(kwin_wayland Plasma::Activities)
++endif()
++if (KWIN_DEPTHOS_AUTHORITY_EXPERIMENT AND KWIN_BUILD_SCREENLOCKER)
++    target_link_libraries(kwin_wayland PW::KScreenLocker)
++endif()
++
+
+ if(TARGET PkgConfig::libsystemd)
+     ecm_qt_declare_logging_category(kwin_wayland
+diff --git a/src/backends/fakeinput/fakeinputdevice.cpp b/src/backends/fakeinput/fakeinputdevice.cpp
+index 3ae0cd9..f5ded4f 100644
+--- a/src/backends/fakeinput/fakeinputdevice.cpp
++++ b/src/backends/fakeinput/fakeinputdevice.cpp
+@@ -5,6 +5,7 @@
+ */
+
+ #include "fakeinputdevice.h"
++#include "depthos_input_origin.h"
+
+ namespace KWin
+ {
+@@ -15,6 +16,9 @@ FakeInputDevice::FakeInputDevice(QObject *parent)
+     : InputDevice(parent)
+     , m_name(QStringLiteral("Fake Input Device %1").arg(++s_lastDeviceId))
+ {
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++    DepthOSExperiment::annotateDevice(this, DepthOSExperiment::InputOrigin::FakeOrVirtual);
++#endif
+ }
+
+ bool FakeInputDevice::isAuthenticated() const
+diff --git a/src/backends/libinput/device.cpp b/src/backends/libinput/device.cpp
+index ec52ac4..17fa3cd 100644
+--- a/src/backends/libinput/device.cpp
++++ b/src/backends/libinput/device.cpp
+@@ -7,6 +7,7 @@
+     SPDX-License-Identifier: GPL-2.0-or-later
+ */
+ #include "device.h"
++#include "depthos_input_origin.h"
+
+ #include "config-kwin.h"
+
+@@ -455,6 +456,10 @@ Device::Device(libinput_device *device, QObject *parent)
+         udev_device_unref(udevDevice);
+     }
+
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++    DepthOSExperiment::annotateDevice(this, m_sysPath.isEmpty() ? DepthOSExperiment::InputOrigin::Unknown
++        : m_isVirtual ? DepthOSExperiment::InputOrigin::FakeOrVirtual : DepthOSExperiment::InputOrigin::LocalCandidate);
++#endif
+     QDBusConnection::sessionBus().registerObject(QStringLiteral("/org/kde/KWin/InputDevice/") + m_sysName,
+                                                  QStringLiteral("org.kde.KWin.InputDevice"),
+                                                  this,
+diff --git a/src/depthos_authority_experiment.h b/src/depthos_authority_experiment.h
+new file mode 100644
+index 0000000..5f0bbb4
+--- /dev/null
++++ b/src/depthos_authority_experiment.h
+@@ -0,0 +1,405 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#pragma once
++
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++#include "activities.h"
++#include "depthos_input_origin.h"
++#include "input.h"
++#include "input_event.h"
++#include "input_event_spy.h"
++#include "virtualdesktops.h"
++#include "wayland/seat.h"
++#include "wayland_server.h"
++#include "window.h"
++#include "workspace.h"
++#include "wayland/clientconnection.h"
++#include "wayland/surface.h"
++#if defined(KWIN_DEPTHOS_BUILTIN_FIXTURE) && KWIN_BUILD_SCREENLOCKER
++#include "utils/filedescriptor.h"
++#include <KScreenLocker/KsldApp>
++#include <poll.h>
++#include <sys/pidfd.h>
++#endif
++
++#include <QDebug>
++#include <QHash>
++#include <QPointer>
++#include <QThread>
++#include <QTimer>
++
++#include <algorithm>
++#include <chrono>
++#include <limits>
++#include <memory>
++
++namespace KWin
++{
++// Virtual compositor experiment. Private non-Q_OBJECT observer: no D-Bus,
++// Wayland, QML or script access, no input interception and no setters.
++class DepthOSAuthorityExperiment final : public QObject, private InputEventSpy
++{
++public:
++    DepthOSAuthorityExperiment()
++        : m_incarnation(QUuid::createUuid())
++    {
++        auto *ws = workspace();
++        auto *desktops = VirtualDesktopManager::self();
++        auto *server = waylandServer();
++        auto *seat = server->seat();
++        connect(ws, &Workspace::windowActivated, this, [this](Window *window) {
++            retire("focus");
++            if (m_focusEpoch == std::numeric_limits<quint64>::max()) {
++                return;
++            }
++            const quint64 epoch = ++m_focusEpoch;
++            QPointer<Window> exact(window);
++            // After focus delivery settles, capture a fresh observation, never
++            // resume a pending proposal. The guarded identity is rechecked.
++            QTimer::singleShot(0, this, [this, exact, epoch]() {
++                if (epoch == m_focusEpoch) {
++                    capture(exact);
++                }
++            });
++        });
++        connect(ws, &Workspace::windowAdded, this, [this](Window *window) {
++            track(window);
++            if (m_pending && window->internalId() == m_pending->uuid) {
++                retire("duplicate-window");
++            }
++        });
++        connect(ws, &Workspace::windowRemoved, this, [this](Window *window) {
++            if (m_pending && m_pending->window == window) {
++                retire("window-removed");
++            }
++            m_generations.remove(window);
++        });
++        for (auto *window : ws->windows()) {
++            track(window);
++        }
++        connect(ws, &Workspace::outputsChanged, this, [this]() { topologyChanged(); });
++        connect(ws, &Workspace::activeOutputChanged, this, [this]() { retire("active-output"); });
++        connect(desktops, &VirtualDesktopManager::desktopAdded, this, [this]() { topologyChanged(); });
++        connect(desktops, &VirtualDesktopManager::desktopRemoved, this, [this]() { topologyChanged(); });
++        connect(desktops, &VirtualDesktopManager::desktopMoved, this, [this]() { topologyChanged(); });
++        connect(desktops, &VirtualDesktopManager::layoutChanged, this, [this]() { topologyChanged(); });
++        connect(desktops, &VirtualDesktopManager::currentChanged, this, [this]() { retire("current-desktop"); });
++#if KWIN_BUILD_ACTIVITIES
++        if (auto *activities = ws->activities()) {
++            connect(activities, &Activities::currentChanged, this, [this]() { retire("activity"); });
++            connect(activities, &Activities::added, this, [this]() { topologyChanged(); });
++            connect(activities, &Activities::removed, this, [this]() { topologyChanged(); });
++        }
++#endif
++        if (seat) {
++            connect(seat, &SeatInterface::focusedKeyboardSurfaceAboutToChange, this,
++                    [this]() { retire("seat-focus"); });
++            connect(seat, &QObject::destroyed, this, [this]() { retire("seat-destroyed"); });
++        }
++        connect(server, &WaylandServer::lockStateChanged, this, [this]() { retire("lock-transition"); });
++#if defined(KWIN_DEPTHOS_BUILTIN_FIXTURE) && KWIN_BUILD_SCREENLOCKER
++        bool pidValid = false;
++        const int pid = qEnvironmentVariableIntValue("KWIN_DEPTHOS_TEST_OWNED_PID", &pidValid);
++        if (pidValid && pid > 0 && kwinApp()->supportsLockScreen() && !kwinApp()->initiallyLocked()) {
++            m_fixtureProcess = FileDescriptor(pidfd_open(pid, 0));
++        }
++        if (m_fixtureProcess.isValid()) {
++            // This object models fixture prompt ownership only. It is never
++            // rendered or published, and cannot stand in for a protected UI.
++            m_fixturePid = pid;
++            m_fixturePrompt = std::make_unique<QObject>(this);
++            // Workspace creation dispatches WaylandServer::initWorkspace and
++            // initializes the supported locker before attaching this component.
++            connect(ScreenLocker::KSldApp::self(), &ScreenLocker::KSldApp::aboutToLock, this, [this]() {
++                m_lockTransition = true;
++                retire("lock-about-to-start");
++            });
++        }
++#endif
++        m_expiry.setSingleShot(true);
++        m_expiry.setTimerType(Qt::PreciseTimer);
++        connect(&m_expiry, &QTimer::timeout, this, [this]() { expire(); });
++        input()->installInputEventSpy(this);
++        qInfo("DEPTHOS_NATIVE37 ready deny-only");
++    }
++
++    ~DepthOSAuthorityExperiment() override
++    {
++        retire("shutdown");
++    }
++
++private:
++    using Clock = std::chrono::steady_clock;
++    enum class Lock { Unknown, Locked, FixtureUnlocked };
++
++    struct Proposal {
++        const QPointer<Window> window;
++        const QPointer<VirtualDesktop> source, destination;
++        const QPointer<SeatInterface> seat;
++        const QPointer<SurfaceInterface> surface;
++        const QPointer<ClientConnection> client;
++        const QUuid uuid, incarnation;
++        const quint64 generation, topology;
++        const QString activity;
++        const QStringList activityMembership;
++        const Lock lock;
++        const Clock::time_point deadline;
++        const QPointer<QObject> fixturePrompt; // Never a protected user prompt.
++    };
++
++    void track(Window *window)
++    {
++        if (m_generations.contains(window) || m_generation == std::numeric_limits<quint64>::max()) {
++            return;
++        }
++        m_generations.insert(window, ++m_generation);
++        const auto invalidate = [this, window]() {
++            if (m_pending && m_pending->window == window) {
++                retire("window-state");
++            }
++        };
++        connect(window, &Window::closed, this, invalidate);
++        connect(window, &Window::desktopsChanged, this, invalidate);
++        connect(window, &Window::activitiesChanged, this, invalidate);
++        connect(window, &Window::minimizedChanged, this, invalidate);
++        connect(window, &Window::hiddenChanged, this, invalidate);
++        connect(window, &Window::hiddenByShowDesktopChanged, this, invalidate);
++        connect(window, &Window::skipTaskbarChanged, this, invalidate);
++        connect(window, &Window::excludeFromCaptureChanged, this, invalidate);
++        connect(window, &QObject::destroyed, this, [this, window]() {
++            if (m_pending && !m_pending->window) {
++                retire("window-destroyed");
++            }
++            m_generations.remove(window);
++        });
++    }
++
++    void topologyChanged()
++    {
++        retire("topology");
++        if (m_topology < std::numeric_limits<quint64>::max()) {
++            ++m_topology;
++        }
++    }
++
++    static QString activity()
++    {
++#if KWIN_BUILD_ACTIVITIES
++        if (auto *activities = workspace()->activities()) {
++            return activities->current();
++        }
++#endif
++        return {};
++    }
++
++    Lock lockState() const
++    {
++#if KWIN_BUILD_SCREENLOCKER
++        if (kwinApp()->supportsLockScreen() && waylandServer()->isScreenLocked()) {
++            return Lock::Locked;
++        }
++#if defined(KWIN_DEPTHOS_BUILTIN_FIXTURE)
++        if (m_fixturePrompt && !m_lockTransition
++            && ScreenLocker::KSldApp::self()->lockState() == ScreenLocker::KSldApp::Unlocked) {
++            return Lock::FixtureUnlocked;
++        }
++#endif
++#endif
++        return Lock::Unknown;
++    }
++
++    static bool eligible(Window *window, SeatInterface *seat)
++    {
++        return window && seat && !seat->name().isEmpty() && !window->isDeleted()
++            && window->isClient() && window->isNormalWindow() && window->isShown()
++            && !window->skipTaskbar() && !window->excludeFromCapture()
++            && workspace()->activeWindow() == window && window->surface()
++            && seat->focusedKeyboardSurface() == window->surface();
++    }
++
++    static bool unique(Window *window)
++    {
++        if (!window || window->internalId().isNull()) {
++            return false;
++        }
++        const auto windows = workspace()->windows();
++        return windows.contains(window)
++            && std::count_if(windows.begin(), windows.end(), [window](const Window *other) {
++                return !other->isDeleted() && other->internalId() == window->internalId();
++            }) == 1;
++    }
++
++    bool matches() const
++    {
++        if (!m_pending) {
++            return false;
++        }
++        const auto &p = *m_pending;
++        auto *window = p.window.data();
++        auto *vd = VirtualDesktopManager::self();
++        return Clock::now() < p.deadline && eligible(window, p.seat)
++            && unique(window) && waylandServer()->seat() == p.seat
++            && p.surface && p.client && window->surface() == p.surface
++            && p.surface->client() == p.client && window->internalId() == p.uuid
++            && m_generations.value(window) == p.generation
++            && m_incarnation == p.incarnation && m_topology == p.topology
++            && p.source && p.destination && vd->desktops().contains(p.source)
++            && vd->desktops().contains(p.destination) && p.source != p.destination
++            && vd->currentDesktop() == p.source && window->desktops().size() == 1
++            && window->desktops().front() == p.source && activity() == p.activity
++            && window->activities() == p.activityMembership && lockState() == p.lock;
++    }
++
++    void capture(Window *window)
++    {
++        auto *seat = waylandServer()->seat();
++        auto *vd = VirtualDesktopManager::self();
++        if (!eligible(window, seat) || !unique(window) || window->desktops().size() != 1
++            || m_pending || !m_generations.contains(window)
++            || m_topology == std::numeric_limits<quint64>::max()) {
++            return;
++        }
++        auto *source = window->desktops().front();
++        const auto desktops = vd->desktops();
++        const auto destination = std::find_if(desktops.begin(), desktops.end(),
++                                             [source](auto *desktop) { return desktop != source; });
++        if (source != vd->currentDesktop() || destination == desktops.end()) {
++            return;
++        }
++        const auto now = Clock::now();
++        constexpr auto ttl = std::chrono::seconds(3);
++        if (now > Clock::time_point::max() - ttl) {
++            return;
++        }
++        QObject *fixturePrompt = nullptr;
++#if defined(KWIN_DEPTHOS_BUILTIN_FIXTURE) && KWIN_BUILD_SCREENLOCKER
++        if (lockState() == Lock::FixtureUnlocked && fixtureClient(window) && !m_syntheticCount) {
++            fixturePrompt = m_fixturePrompt.get();
++        }
++#endif
++        m_pending.reset(new Proposal{
++            window, source, *destination, seat, window->surface(), window->surface()->client(),
++            window->internalId(), m_incarnation,
++            m_generations.value(window), m_topology, activity(), window->activities(), lockState(), now + ttl,
++            fixturePrompt
++        });
++        if (!matches()) {
++            retire("snapshot-mismatch");
++            return;
++        }
++        m_expiry.start(ttl);
++        const char *lock = m_pending->lock == Lock::Unknown ? "unknown"
++            : m_pending->lock == Lock::Locked ? "locked" : "fixture-unlocked";
++        qInfo("DEPTHOS_NATIVE37 pending native-match prompt=%s activity=%s lock=%s",
++              fixturePrompt ? "synthetic-fixture" : "absent",
++              m_pending->activity.isEmpty() ? "unavailable" : "observed", lock);
++#if defined(KWIN_DEPTHOS_BUILTIN_FIXTURE) && KWIN_BUILD_SCREENLOCKER
++        if (fixturePrompt) {
++            const FixtureToken bound{QPointer<QObject>(fixturePrompt), m_pending.get()};
++            const bool accepted = testCount(bound);
++            const bool replay = testCount(bound);
++            qInfo("DEPTHOS_NATIVE37 synthetic first=%s replay=%s count=%u",
++                  accepted ? "counted" : "denied", replay ? "counted" : "denied", m_syntheticCount);
++        }
++#endif
++    }
++
++#if defined(KWIN_DEPTHOS_BUILTIN_FIXTURE) && KWIN_BUILD_SCREENLOCKER
++    struct FixtureToken {
++        const QPointer<QObject> prompt;
++        const Proposal *const proposal;
++    };
++
++    bool fixtureClient(Window *window) const
++    {
++        if (!window || !window->surface() || !window->surface()->client()
++            || window->surface()->client()->processId() != m_fixturePid || !m_fixtureProcess.isValid()) {
++            return false;
++        }
++        pollfd process{m_fixtureProcess.get(), POLLIN, 0};
++        return poll(&process, 1, 0) == 0; // No blocking; any exit or error denies.
++    }
++
++    bool testCount(const FixtureToken &token)
++    {
++        if (QThread::currentThread() != thread() || m_syntheticCount || !m_pending
++            || token.proposal != m_pending.get() || !m_fixturePrompt
++            || token.prompt != m_fixturePrompt.get() || m_pending->fixturePrompt != token.prompt
++            || m_fixturePrompt->parent() != this || m_pending->lock != Lock::FixtureUnlocked
++            || m_pending->activity.isEmpty() || !fixtureClient(m_pending->window)
++            || !matches()) {
++            return false;
++        }
++        // No callback to a presenter, IPC, nested loop, setter or persisted sink.
++        // Consume before counting. Keep the consumed proposal alive until teardown
++        // so the opaque token cannot alias a subsequently allocated proposal.
++        m_consumedFixture = std::move(m_pending);
++        ++m_syntheticCount;
++        return true;
++    }
++#endif
++
++    void expire()
++    {
++        if (!m_pending) {
++            return;
++        }
++        const auto now = Clock::now();
++        if (now >= m_pending->deadline) {
++            retire("deadline");
++        } else {
++            m_expiry.start(std::chrono::ceil<std::chrono::milliseconds>(m_pending->deadline - now));
++        }
++    }
++
++    void retire(const char *reason)
++    {
++        if (m_pending) {
++            m_pending.reset();
++            m_expiry.stop();
++            qInfo("DEPTHOS_NATIVE37 retired %s", reason);
++        }
++    }
++
++    struct InputObservation {
++        DepthOSExperiment::InputOrigin origin;
++        QPointer<SeatInterface> logicalSeat;
++    };
++
++    void observe(InputDevice *device)
++    {
++        const InputObservation observation{DepthOSExperiment::observeDevice(device), waylandServer()->seat()};
++        // Bound log volume per origin. No key codes, device names, UUIDs or titles.
++        const auto origin = observation.origin;
++        const auto bit = 1U << static_cast<unsigned>(origin);
++        if (!(m_seenOrigins & bit)) {
++            m_seenOrigins |= bit;
++            const char *labels[] = {"unknown", "local-candidate", "eis-or-portal", "fake-or-virtual"};
++            qInfo("DEPTHOS_NATIVE37 input origin=%s denied", labels[static_cast<unsigned>(origin)]);
++        }
++        if (m_pending && (observation.logicalSeat != m_pending->seat || !matches())) {
++            retire("stale-at-ingress");
++        }
++    }
++
++    void keyboardKey(KeyboardKeyEvent *event) override { observe(event->device); }
++    void pointerButton(PointerButtonEvent *event) override { observe(event->device); }
++
++    const QUuid m_incarnation;
++    quint64 m_generation = 0;
++    quint64 m_topology = 1;
++    quint64 m_focusEpoch = 0;
++    QHash<Window *, quint64> m_generations;
++    std::unique_ptr<const Proposal> m_pending;
++    QTimer m_expiry;
++    unsigned m_seenOrigins = 0;
++#if defined(KWIN_DEPTHOS_BUILTIN_FIXTURE) && KWIN_BUILD_SCREENLOCKER
++    pid_t m_fixturePid = -1;
++    FileDescriptor m_fixtureProcess;
++    std::unique_ptr<QObject> m_fixturePrompt;
++    std::unique_ptr<const Proposal> m_consumedFixture;
++    bool m_lockTransition = false;
++    unsigned m_syntheticCount = 0;
++#endif
++};
++}
++#endif
+diff --git a/src/depthos_input_origin.h b/src/depthos_input_origin.h
+new file mode 100644
+index 0000000..ca3c55d
+--- /dev/null
++++ b/src/depthos_input_origin.h
+@@ -0,0 +1,40 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#pragma once
++
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++#include "core/inputdevice.h"
++#include <QVariant>
++
++namespace KWin::DepthOSExperiment
++{
++// Observational backend labels only. This dynamic property carries no trust and
++// there is no mapping from any one of these labels to approval.
++enum class InputOrigin { Unknown, LocalCandidate, EisOrPortal, FakeOrVirtual };
++
++inline void annotateDevice(InputDevice *device, InputOrigin origin)
++{
++    device->setProperty("_depthos_test_backend_origin", static_cast<int>(origin));
++}
++
++inline InputOrigin observeDevice(InputDevice *device)
++{
++    if (!device) {
++        return InputOrigin::Unknown;
++    }
++    const auto value = device->property("_depthos_test_backend_origin");
++    if (value.metaType().id() != QMetaType::Int) {
++        return InputOrigin::Unknown;
++    }
++    switch (value.toInt()) {
++    case static_cast<int>(InputOrigin::LocalCandidate):
++        return InputOrigin::LocalCandidate;
++    case static_cast<int>(InputOrigin::EisOrPortal):
++        return InputOrigin::EisOrPortal;
++    case static_cast<int>(InputOrigin::FakeOrVirtual):
++        return InputOrigin::FakeOrVirtual;
++    default:
++        return InputOrigin::Unknown;
++    }
++}
++}
++#endif
+diff --git a/src/main_wayland.cpp b/src/main_wayland.cpp
+index 3f7ef26..f9d8c08 100644
+--- a/src/main_wayland.cpp
++++ b/src/main_wayland.cpp
+@@ -18,6 +18,10 @@
+ #include "core/outputbackend.h"
+ #include "core/renderdevice.h"
+ #include "core/session.h"
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++#define KWIN_DEPTHOS_BUILTIN_FIXTURE
++#endif
++#include "depthos_authority_experiment.h"
+ #include "effect/effecthandler.h"
+ #include "inputmethod.h"
+ #include "tabletmodemanager.h"
+@@ -112,6 +116,9 @@ ApplicationWayland::ApplicationWayland(int &argc, char **argv)
+ ApplicationWayland::~ApplicationWayland()
+ {
+     setTerminating();
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++    m_depthosAuthority.reset();
++#endif
+     if (!waylandServer()) {
+         return;
+     }
+@@ -155,6 +162,11 @@ void ApplicationWayland::performStartup()
+     auto compositor = Compositor::create();
+     compositor->createRenderer();
+     createWorkspace();
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++    if (qobject_cast<VirtualBackend *>(outputBackend())) {
++        m_depthosAuthority = std::make_unique<DepthOSAuthorityExperiment>();
++    }
++#endif
+     createScene();
+     createPlugins();
+
+diff --git a/src/main_wayland.h b/src/main_wayland.h
+index 0a6d3a6..3c114af 100644
+--- a/src/main_wayland.h
++++ b/src/main_wayland.h
+@@ -24,6 +24,10 @@ class Xwayland;
+
+ }
+
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++class DepthOSAuthorityExperiment;
++#endif
++
+ class ApplicationWayland : public Application
+ {
+     Q_OBJECT
+@@ -105,6 +109,9 @@ private:
+     std::vector<FileDescriptor> m_xwaylandFds;
+ #endif
+     KConfigWatcher::Ptr m_settingsWatcher;
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++    std::unique_ptr<DepthOSAuthorityExperiment> m_depthosAuthority;
++#endif
+ };
+
+ }
+diff --git a/src/plugins/eis/eisdevice.cpp b/src/plugins/eis/eisdevice.cpp
+index 63a213e..e1968d3 100644
+--- a/src/plugins/eis/eisdevice.cpp
++++ b/src/plugins/eis/eisdevice.cpp
+@@ -6,6 +6,7 @@
+ */
+
+ #include "eisdevice.h"
++#include "depthos_input_origin.h"
+ #include "keyboard_input.h"
+ #include "keyboard_layout.h"
+
+@@ -26,6 +27,9 @@ EisDevice::EisDevice(eis_device *device, QObject *parent)
+     , m_device(device)
+     , m_releaseTimer(std::make_unique<QTimer>())
+ {
++#ifdef KWIN_DEPTHOS_AUTHORITY_EXPERIMENT
++    DepthOSExperiment::annotateDevice(this, DepthOSExperiment::InputOrigin::EisOrPortal);
++#endif
+     eis_device_set_user_data(device, this);
+     eis_device_add(device);
+     m_releaseTimer->setInterval(std::chrono::seconds(1));

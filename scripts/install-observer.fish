@@ -17,8 +17,10 @@ for tool in kpackagetool6 kwin_wayland
         exit 1
     end
 end
-if test "$XDG_SESSION_TYPE" != wayland; or test (kwin_wayland --version) != 'kwin 6.8.1'
-    printf 'Only KWin 6.8.1 Wayland is source-audited.\n' >&2
+set -l supported_versions 'kwin 6.8.1' 'kwin 6.8.2' 'kwin 6.8.3'
+set -l kwin_ver (kwin_wayland --version 2>/dev/null)
+if test "$XDG_SESSION_TYPE" != wayland; or not contains -- "$kwin_ver" $supported_versions
+    printf 'Unsupported KWin version (%s) or session type (%s).\nOnly tested KWin Wayland versions are supported: 6.8.1, 6.8.2, 6.8.3.\n' "$kwin_ver" "$XDG_SESSION_TYPE" >&2
     exit 1
 end
 set -l data_home "$HOME/.local/share"

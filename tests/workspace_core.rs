@@ -229,7 +229,7 @@ fn sqlite_enforces_foreign_keys_and_unique_ids_and_reports_schema_version() {
     );
     let report = SqliteStore::open(&path).unwrap().doctor().unwrap();
     assert!(report.foreign_keys);
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(report.schema_version, 2);
     assert_eq!(report.foreign_key_violations, 0);
     assert_eq!(report.integrity, ["ok"]);
     raw.pragma_update(None, "user_version", 99).unwrap();

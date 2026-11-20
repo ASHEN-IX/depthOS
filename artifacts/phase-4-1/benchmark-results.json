@@ -1,0 +1,21 @@
+{
+  "ttfui_ms_mean": 63.68,
+  "ttfui_ms_min": 59.87,
+  "ttfui_ms_max": 73.88,
+  "world_to_workspace_dispatch_ms": 0.067,
+  "workspace_to_desktop_dispatch_ms": 0.054,
+  "desktop_to_workspace_return_ms": 0.11,
+  "search_response_ms_mean": 0.064,
+  "search_response_ms_p99": 0.495,
+  "reduced_motion_transition_ms": 0.249,
+  "rapid_zoom_burst_50_cycles_s": 0.01,
+  "rapid_zoom_ops_per_sec": 19382.1,
+  "rapid_sibling_burst_100_taps_s": 0.664,
+  "rapid_sibling_taps_per_sec": 301.4,
+  "large_hierarchy_load_ms": 76.64,
+  "large_hierarchy_search_ms": 4.526,
+  "large_hierarchy_entities": 1850,
+  "observer_recovery_state_machine": "PASS",
+  "shutdown_during_active_animation": "PASS (Clean Exit, 0 Leaks)",
+  "peak_rss_mib": 522.96
+}

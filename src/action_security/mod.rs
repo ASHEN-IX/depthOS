@@ -1,23 +1,30 @@
-//! Offline authorization reference model. No transport, native executor, storage,
-//! wall clock, randomness or callbacks. Production interaction proof issuance is
-//! deliberately unavailable. Synthetic consent exists only in this module's tests.
-use crate::{
-    context::{Version, policy::WindowKey},
-    domain::WorkspaceId,
-};
+//! Offline authorization reference model. No transport, native executor, persistence,
+//! wall clock or callbacks. Production interaction proof issuance is unavailable.
+//! Synthetic consent exists only in this module’s tests.
+pub use crate::context::policy::WindowKey;
+use crate::{context::Version, domain::WorkspaceId};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 use uuid::Uuid;
 
+mod proposal;
+pub use proposal::NativeMoveProposal;
+
+pub mod durable;
+pub mod ipc;
+pub mod lease;
+pub mod reconciliation;
+
 pub const MAX_ACTIONS: usize = 64;
 pub const CONSENT_TTL_MS: u64 = 5_000;
 pub const ACK_TTL_MS: u64 = 1_000;
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RequestId(pub Uuid);
 /// Authority-owned monotonic milliseconds in the model, never a wire timestamp.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Tick(pub u64);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Client {
@@ -31,9 +38,9 @@ pub struct Compositor {
     pub unique_owner: String,
     pub incarnation: Uuid,
 }
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NativeDesktop(pub String);
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Placement {
     pub desktop: NativeDesktop,
     pub activity: String,
@@ -48,7 +55,7 @@ pub struct WindowState {
     pub placement: Placement,
     pub logical: BTreeSet<WorkspaceId>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Operation {
     /// Empty destination explicitly unassigns; >1 target explicitly shares.
     Associate {
@@ -102,7 +109,7 @@ pub enum Error {
     InvalidState,
     CounterExhausted,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Uncertainty {
     NoAcknowledgement,
     Timeout,
@@ -113,6 +120,8 @@ pub enum Uncertainty {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
+    #[cfg(test)]
+    WouldDispatch,
     Authorized,
     InFlight,
     Succeeded,
@@ -134,7 +143,9 @@ impl State {
 /// No public constructor, Clone, Deserialize, or serializable bearer credential.
 /// ```compile_fail
 /// use depthos_core::action_security::Consent;
-/// let proof = Consent {};
+/// fn inspect_nonce(proof: &Consent) -> u64 {
+///     proof.nonce
+/// }
 /// ```
 pub struct Consent {
     authority: Arc<()>,
@@ -673,3 +684,6 @@ impl Authorizer {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod execution;

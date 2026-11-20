@@ -1,10 +1,10 @@
 //! Pure policy over an allowlisted projection. No native packets, storage or I/O.
 use crate::domain::WorkspaceId;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct WindowKey {
     pub epoch: Uuid,
     pub runtime_id: String,

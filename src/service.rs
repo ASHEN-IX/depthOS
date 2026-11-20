@@ -143,6 +143,9 @@ impl<S: Store> WorkspaceService<S> {
     pub fn desktops(&self, workspace: WorkspaceId) -> Result<Vec<LogicalDesktop>> {
         self.store.desktops(workspace)
     }
+    pub(crate) fn store(&self) -> &S {
+        &self.store
+    }
     pub fn tree(&self) -> Result<Universe> {
         self.store.tree()
     }

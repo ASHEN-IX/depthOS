@@ -117,6 +117,8 @@ pub enum Error {
     ForeignDatabase,
     #[error("database path is unsafe or inaccessible: {0}")]
     StoragePath(String),
+    #[error("refusing to initialize: {0}")]
+    InitRefused(String),
     #[error("schema migration failed: {0}")]
     Migration(rusqlite::Error),
     #[error("database operation failed: {0}")]

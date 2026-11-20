@@ -7,9 +7,13 @@ use std::{
 use clap::{Parser, Subcommand};
 use depthos_core::{
     application::Application,
+    associations::RuleKind,
     domain::{DesktopId, Error, Result, WorkspaceId, WorldId},
     observed::ObservedStateSource,
-    sqlite::{SqliteStore, default_path},
+    sqlite::{
+        SqliteStore, default_path,
+        init::{InitOptions, initialize, initialize_default, probe},
+    },
 };
 use serde::Serialize;
 
@@ -34,9 +38,27 @@ enum Command {
     Workspace(WorkspaceCommand),
     #[command(subcommand)]
     Desktop(DesktopCommand),
-    /// Print the complete logical hierarchy as JSON.
+    /// Configure a logical-only association rule in an existing SQLite database.
+    #[command(subcommand)]
+    Association(AssociationCommand),
+    /// Print the complete logical hierarchy as JSON. Strictly read-only: never
+    /// creates, migrates or repairs a database (run `depthos init` first).
     Tree,
-    /// Check schema version, foreign keys and database integrity.
+    /// Explicitly initialize a user-owned database (never overwrites anything).
+    Init {
+        /// Also create Default World / Primary Workspace / Desktop 1 when the
+        /// database holds no worlds yet.
+        #[arg(long)]
+        default_hierarchy: bool,
+    },
+    /// Read-only probe of the database state (never creates or modifies it).
+    Status {
+        /// Machine-readable output (always JSON on stdout).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check schema version, foreign keys and database integrity. Read-only:
+    /// never creates or migrates a database.
     Doctor,
     /// Observe native state in a foreground session-bus receiver; never opens SQLite.
     #[command(subcommand)]
@@ -44,6 +66,44 @@ enum Command {
     /// Run a foreground logical/observation/context controller.
     #[command(subcommand)]
     Controller(ControllerCommand),
+    /// Launch the standalone Spatial Workspace Alpha UI.
+    Ui(UiCommand),
+}
+
+#[derive(Subcommand)]
+enum AssociationCommand {
+    /// Set a native Desktop mapping or a Workspace-scoped application rule.
+    Set {
+        #[arg(value_enum)]
+        kind: RuleKind,
+        key: String,
+        #[arg(long)]
+        workspace: WorkspaceId,
+        #[arg(long)]
+        desktop: Option<DesktopId>,
+    },
+    /// Remove a configured association rule.
+    Remove {
+        #[arg(value_enum)]
+        kind: RuleKind,
+        key: String,
+    },
+}
+
+#[derive(clap::Args, Clone, Debug)]
+pub struct UiCommand {
+    /// Force standalone demo/mock mode even if DepthOS Controller D-Bus is available
+    #[arg(long, short)]
+    pub mock: bool,
+    /// Enable reduced motion mode (instant animations)
+    #[arg(long)]
+    pub reduced_motion: bool,
+    /// Run using offscreen QPA platform (for automated test validation)
+    #[arg(long)]
+    pub offscreen: bool,
+    /// Automatically quit after specified milliseconds (for testing)
+    #[arg(long, default_value_t = 0)]
+    pub quit_after_ms: u64,
 }
 
 #[derive(Subcommand)]
@@ -169,10 +229,77 @@ fn status(id: impl Serialize) -> Result<()> {
     json(serde_json::json!({ "id": id }))
 }
 
+fn database_path(cli: &Cli) -> Result<PathBuf> {
+    cli.db.clone().map(Ok).unwrap_or_else(default_path)
+}
+
+fn run_status(cli: &Cli, json_output: bool) -> Result<()> {
+    let status = probe(&database_path(cli)?)?;
+    if json_output {
+        return json(&status);
+    }
+    let mut output = io::stdout().lock();
+    writeln!(
+        output,
+        "{}: {}",
+        status.path.display(),
+        status.state.as_str()
+    )?;
+    if let Some(detail) = &status.detail {
+        writeln!(output, "  {detail}")?;
+    }
+    if let Some(counts) = status.counts {
+        writeln!(
+            output,
+            "  {} worlds, {} workspaces, {} desktops",
+            counts.worlds, counts.workspaces, counts.desktops
+        )?;
+    }
+    Ok(())
+}
+
+fn run_init(cli: &Cli, default_hierarchy: bool) -> Result<()> {
+    let options = InitOptions { default_hierarchy };
+    let report = match &cli.db {
+        Some(path) => initialize(path, options)?,
+        None => initialize_default(options)?,
+    };
+    json(&report)
+}
+
+fn command_is_read_only(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Tree
+            | Command::Doctor
+            | Command::World(WorldCommand::List)
+            | Command::Workspace(WorkspaceCommand::List { .. })
+            | Command::Desktop(DesktopCommand::List { .. })
+    )
+}
+
 fn run(cli: Cli) -> Result<bool> {
-    let store = match &cli.db {
-        Some(path) => SqliteStore::open(path)?,
-        None => SqliteStore::open_default()?,
+    if let Command::Association(command) = &cli.command {
+        let (kind, key, target) = match command {
+            AssociationCommand::Set {
+                kind,
+                key,
+                workspace,
+                desktop,
+            } => (*kind, key, Some((*workspace, *desktop))),
+            AssociationCommand::Remove { kind, key } => (*kind, key, None),
+        };
+        SqliteStore::configure_association(&database_path(&cli)?, kind, key, target)?;
+        return Ok(true);
+    }
+    let store = if command_is_read_only(&cli.command) {
+        // Reads must not create, migrate, or repair. `depthos init` is the
+        // only implicit-path creator, and only when the user asks for it.
+        SqliteStore::open_read_only(&database_path(&cli)?)?
+    } else if let Some(path) = &cli.db {
+        SqliteStore::open(path)?
+    } else {
+        SqliteStore::open_default()?
     };
     if matches!(cli.command, Command::Doctor) {
         let path = cli.db.map(Ok).unwrap_or_else(default_path)?;
@@ -220,13 +347,109 @@ fn run(cli: Cli) -> Result<bool> {
             DesktopCommand::Delete { id } => service.delete_desktop(id)?,
         },
         Command::Tree => json(service.tree()?)?,
-        Command::Doctor | Command::System(_) | Command::Controller(_) => unreachable!(),
+        Command::Doctor
+        | Command::Association(_)
+        | Command::Init { .. }
+        | Command::Status { .. }
+        | Command::System(_)
+        | Command::Controller(_)
+        | Command::Ui(_) => {
+            unreachable!()
+        }
     }
     Ok(true)
 }
 
+fn run_ui(cli: &Cli, command: &UiCommand) -> ExitCode {
+    let mut candidate_paths = vec![
+        PathBuf::from("tools/depthos-spatial-alpha"),
+        PathBuf::from("./tools/depthos-spatial-alpha"),
+    ];
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        candidate_paths.push(parent.join("tools/depthos-spatial-alpha"));
+        if let Some(grandparent) = parent.parent() {
+            candidate_paths.push(grandparent.join("tools/depthos-spatial-alpha"));
+            if let Some(great) = grandparent.parent() {
+                candidate_paths.push(great.join("tools/depthos-spatial-alpha"));
+            }
+        }
+    }
+
+    let runner = candidate_paths.into_iter().find(|p| p.exists());
+    let runner_path = match runner {
+        Some(path) => path,
+        None => {
+            eprintln!("depthos: could not locate tools/depthos-spatial-alpha");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut process = std::process::Command::new(&runner_path);
+    if let Ok(exe) = std::env::current_exe() {
+        // The launcher probes and initializes only through this binary, so a
+        // relocated build does not fall back to a hard-coded source tree.
+        process.env("DEPTHOS_BIN", &exe);
+    }
+    if let Some(db) = &cli.db {
+        process.arg("--db").arg(db);
+    }
+    if command.mock {
+        process.arg("--mock");
+    }
+    if command.reduced_motion {
+        process.arg("--reduced-motion");
+    }
+    if command.offscreen {
+        process.arg("--offscreen");
+    }
+    if command.quit_after_ms > 0 {
+        process
+            .arg("--quit-after-ms")
+            .arg(command.quit_after_ms.to_string());
+    }
+
+    match process.status() {
+        Ok(status) => {
+            if status.success() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(e) => {
+            eprintln!("depthos: failed to execute spatial UI runner: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn finish(result: Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("depthos: {error}");
+            match error {
+                // The target exists but is not safe to initialize or use.
+                Error::InitRefused(_) => ExitCode::from(3),
+                _ => ExitCode::FAILURE,
+            }
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Ui(command) = &cli.command {
+        return run_ui(&cli, command);
+    }
+    if let Command::Status { json } = &cli.command {
+        return finish(run_status(&cli, *json));
+    }
+    if let Command::Init { default_hierarchy } = &cli.command {
+        return finish(run_init(&cli, *default_hierarchy));
+    }
     if let Command::Controller(ControllerCommand::Run { timeout_seconds }) = &cli.command {
         let result = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -353,11 +576,11 @@ async fn run_controller(
     timeout: Option<u64>,
 ) -> std::result::Result<(), String> {
     use depthos_core::controller::{Controller, ControllerOptions, Lifecycle, RecoveryReason};
-    let store = match database {
-        Some(path) => SqliteStore::open(path),
-        None => SqliteStore::open_default(),
-    }
-    .map_err(|_| "Could not open logical workspace database".to_owned())?;
+    let path = database
+        .cloned()
+        .map_or_else(default_path, Ok)
+        .map_err(|err| err.to_string())?;
+    let store = SqliteStore::open_read_only(&path).map_err(|err| err.to_string())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|_| "Could not register shutdown signal".to_owned())?;
     let controller = Controller::start(store, ControllerOptions::default())

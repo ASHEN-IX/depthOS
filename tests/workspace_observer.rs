@@ -99,7 +99,22 @@ async fn shared_application_reads_empty_and_populated_hierarchy_without_persisti
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert_eq!(tables, ["desktops", "workspaces", "worlds"]);
+    assert_eq!(
+        tables,
+        [
+            "desktop_association_rules",
+            "desktops",
+            "workspaces",
+            "worlds"
+        ]
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM desktop_association_rules", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
     for (table, id) in [
         ("worlds", world.0),
         ("workspaces", workspace.0),

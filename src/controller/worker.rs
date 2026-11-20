@@ -178,7 +178,10 @@ impl Actor {
         });
     }
     fn read_spatial(&mut self, cached: Option<Version>) -> SpatialRead {
-        let hierarchy = self.app.hierarchy().ok();
+        let (hierarchy, rules) = match self.app.logical().store().association_view() {
+            Ok((tree, rules)) => (Some(tree), rules),
+            Err(_) => (None, Vec::new()),
+        };
         let mut snapshot = hierarchy
             .as_ref()
             .map(|_| self.app.observations().snapshot());
@@ -195,13 +198,22 @@ impl Actor {
         let result = self
             .context
             .synchronize_from(hierarchy.as_ref(), snapshot.as_ref().map(Result::as_ref));
+        let report = result
+            .as_ref()
+            .ok()
+            .map(|_| self.context.current_report(Selection::All));
+        let shelves = hierarchy
+            .as_ref()
+            .zip(report.as_ref())
+            .zip(snapshot.as_ref().and_then(|s| s.as_ref().ok()))
+            .map(|((tree, report), snapshot)| {
+                crate::associations::reconcile(tree, &rules, report, snapshot)
+            });
         let changed_context = if result
             .as_ref()
             .is_ok_and(|version| Some(version) != cached.as_ref())
         {
-            snapshot
-                .and_then(Result::ok)
-                .map(|snapshot| (self.context.current_report(Selection::All), snapshot))
+            report.zip(snapshot.and_then(Result::ok))
         } else {
             None
         };
@@ -210,6 +222,7 @@ impl Actor {
             hierarchy,
             health: self.health.borrow().clone(),
             changed_context,
+            shelves,
         }
     }
     fn disconnected(&mut self) {

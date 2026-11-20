@@ -323,9 +323,6 @@ fn run_ui(cli: &Cli, command: &UiCommand) -> ExitCode {
             }
         }
     }
-    candidate_paths.push(PathBuf::from(
-        "/home/ashenix/Projects/DepthOS-phase-4-1/tools/depthos-spatial-alpha",
-    ));
 
     let runner = candidate_paths.into_iter().find(|p| p.exists());
     let runner_path = match runner {
@@ -337,6 +334,11 @@ fn run_ui(cli: &Cli, command: &UiCommand) -> ExitCode {
     };
 
     let mut process = std::process::Command::new(&runner_path);
+    if let Ok(exe) = std::env::current_exe() {
+        // The launcher probes and initializes only through this binary, so a
+        // relocated build does not fall back to a hard-coded source tree.
+        process.env("DEPTHOS_BIN", &exe);
+    }
     if let Some(db) = &cli.db {
         process.arg("--db").arg(db);
     }

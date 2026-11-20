@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """DepthOS Spatial Workspace Alpha - Standalone Development Application.
 
-Runs an interactive QtQuick scene graph window on KDE Wayland connected to the
-DepthOS Controller D-Bus service and Observer, or runs in standalone demo/mock mode
-if the controller is offline.
+Runs an interactive QtQuick scene graph window on KDE Wayland. Source selection
+is explicit: --mock loads demo data, --db reads that file, otherwise a connected
+controller is used when one is on the session bus, otherwise the default database
+is probed read-only. A missing database shows an offer. Demo data is never
+substituted silently, and nothing is created until "Create my workspace".
 
 Safe development launch commands:
     ./tools/depthos-spatial-alpha
@@ -18,20 +20,103 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 QML_FILE = ROOT / "experiments/spatial-alpha/main.qml"
+DEPTHOS = None
+
+# Init refuses these. The UI must not offer "Create" as if it would succeed.
+BLOCKED_DB_STATES = {
+    "corrupt",
+    "unsupported-schema",
+    "permission-denied",
+    "unsafe-permissions",
+    "symlink",
+    "hardlink",
+    "foreign",
+}
+
+
+def depthos_executable():
+    """Locate the depthos binary without touching a database."""
+    candidates = []
+    if DEPTHOS:
+        candidates.append(Path(DEPTHOS))
+    env_bin = os.environ.get("DEPTHOS_BIN")
+    if env_bin:
+        candidates.append(Path(env_bin))
+    cargo = os.environ.get("CARGO_TARGET_DIR")
+    if cargo:
+        candidates.append(Path(cargo) / "debug" / "depthos")
+        candidates.append(Path(cargo) / "release" / "depthos")
+    candidates.append(ROOT / "target" / "debug" / "depthos")
+    candidates.append(ROOT / "target" / "release" / "depthos")
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def run_depthos(args):
+    exe = depthos_executable()
+    if exe is None:
+        return None
+    return subprocess.run([str(exe), *args], capture_output=True, text=True)
+
+
+def status_json(db_path):
+    """Read-only probe. Never creates or migrates the database."""
+    cmd = ["status", "--json"]
+    if db_path is not None:
+        cmd = ["--db", str(db_path), *cmd]
+    proc = run_depthos(cmd)
+    if proc is None:
+        return None, "depthos binary was not found. Nothing was created or modified."
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "status failed").strip()
+        return None, detail
+    try:
+        return json.loads(proc.stdout), None
+    except json.JSONDecodeError as exc:
+        return None, f"depthos status returned invalid JSON: {exc}"
+
+
+def clear_hierarchy(backend):
+    for prop in ("worlds", "workspaces", "desktops", "windows"):
+        backend.setProperty(prop, [])
+    for prop in ("selectedWorldId", "selectedWorkspaceId", "selectedDesktopId", "selectedWindowId"):
+        backend.setProperty(prop, "")
+    backend.setProperty("mockMode", False)
+    backend.setProperty("observerLive", False)
+    backend.setProperty("observationHealth", "Unavailable")
+    backend.setProperty("sourceKind", "none")
+
+
+def apply_sqlite_provenance(backend, db_path):
+    backend.setProperty("mockMode", False)
+    backend.setProperty("sourceKind", "sqlite")
+    backend.setProperty("sourceDetail", str(db_path))
+    backend.setProperty("state", "Database Mode")
+    backend.setProperty("health", "Local")
+    # A local file is not a native observer, even when the read succeeded.
+    backend.setProperty("observerLive", False)
+    backend.setProperty("observerDetail", "Local SQLite has no native observation channel")
+    backend.setProperty("observationHealth", "Unavailable")
+    backend.setProperty("databasePath", str(db_path))
+    backend.setProperty("databaseState", "valid")
 
 
 def load_from_db_path(db_path, backend):
-    exe = ROOT / "target/debug/depthos"
-    if not exe.exists():
-        exe = ROOT / "target/release/depthos"
-    if not exe.exists():
+    exe = depthos_executable()
+    if exe is None:
         return False
     try:
-        proc = subprocess.run([str(exe), "--db", str(db_path), "tree"], capture_output=True, text=True, check=True)
+        proc = subprocess.run(
+            [str(exe), "--db", str(db_path), "tree"],
+            capture_output=True, text=True, check=True,
+        )
         data = json.loads(proc.stdout)
         worlds = []
         workspaces = []
@@ -55,8 +140,8 @@ def load_from_db_path(db_path, backend):
                     "worldId": w_id,
                     "name": ws_info.get("name", "Workspace"),
                     "description": ws_info.get("description") or "Logical Workspace",
-                    "rootDirectory": ws_info.get("root_directory") or "~",
-                    "gitBranch": "main"
+                    "rootDirectory": ws_info.get("root_directory") or "",
+                    "gitBranch": ""
                 })
                 for d in ws.get("desktops", []):
                     desktops.append({
@@ -69,10 +154,7 @@ def load_from_db_path(db_path, backend):
         backend.setProperty("workspaces", workspaces)
         backend.setProperty("desktops", desktops)
         backend.setProperty("windows", [])
-        backend.setProperty("state", "Database Mode")
-        backend.setProperty("health", "Synchronized")
-        backend.setProperty("observationHealth", "Unavailable")
-        backend.setProperty("mockMode", False)
+        apply_sqlite_provenance(backend, db_path)
         if worlds:
             backend.setProperty("selectedWorldId", worlds[0]["id"])
             sub_ws = [ws for ws in workspaces if ws["worldId"] == worlds[0]["id"]]
@@ -128,8 +210,8 @@ def load_from_dbus(endpoint, backend):
                     "worldId": item["parentId"],
                     "name": item["name"],
                     "description": "Logical Workspace",
-                    "rootDirectory": "~",
-                    "gitBranch": "main"
+                    "rootDirectory": "",
+                    "gitBranch": ""
                 })
             elif k == "desktop":
                 desktops.append({
@@ -160,6 +242,11 @@ def load_from_dbus(endpoint, backend):
             badge_default = "Reconnecting"
         else:
             badge_default = "Unavailable"
+        # "Synchronized" is the only controller health that means the native
+        # observer is live. A connected controller is not enough.
+        observer_live = obs_health == "Synchronized"
+        if not observer_live and badge_default == "Live":
+            badge_default = "Unavailable"
 
         windows = []
         for item in context_items:
@@ -182,17 +269,24 @@ def load_from_dbus(endpoint, backend):
                 "fullscreen": False,
                 "focused": False,
                 "statusBadge": badge,
-                "statusReason": reason or "Live observation"
+                "statusReason": reason or (
+                    "Observed by the native observer" if observer_live
+                    else "Controller connected; native observer is not live"
+                )
             })
 
         backend.setProperty("worlds", worlds)
         backend.setProperty("workspaces", workspaces)
         backend.setProperty("desktops", desktops)
         backend.setProperty("windows", windows)
-        backend.setProperty("state", "Connected" if obs_health == "Synchronized" else "Degraded")
-        backend.setProperty("health", lifecycle)
-        backend.setProperty("observationHealth", badge_default)
         backend.setProperty("mockMode", False)
+        backend.setProperty("sourceKind", "controller")
+        backend.setProperty("sourceDetail", "org.depthos.Controller")
+        backend.setProperty("state", "Connected")
+        backend.setProperty("health", lifecycle)
+        backend.setProperty("observerLive", observer_live)
+        backend.setProperty("observerDetail", str(obs_health))
+        backend.setProperty("observationHealth", "Live" if observer_live else badge_default)
 
         if worlds:
             backend.setProperty("selectedWorldId", worlds[0]["id"])
@@ -238,7 +332,22 @@ def main():
         default=0,
         help="Automatically quit after specified milliseconds (for testing)"
     )
+    parser.add_argument("--depthos-bin", type=Path, help="depthos binary used for status/init/tree (or DEPTHOS_BIN)")
+    parser.add_argument("--frame-log", type=Path, help="JSONL frame timings (or DEPTHOS_FRAME_LOG). Own window only.")
+    parser.add_argument("--memory-log", type=Path, help="JSONL RSS/PSS samples (or DEPTHOS_MEMORY_LOG)")
+    parser.add_argument("--screenshot", type=Path, help="PNG of this window via grabWindow (or DEPTHOS_SCREENSHOT)")
     args = parser.parse_args()
+    global DEPTHOS
+    if args.depthos_bin:
+        DEPTHOS = args.depthos_bin
+    elif os.environ.get("DEPTHOS_BIN"):
+        DEPTHOS = Path(os.environ["DEPTHOS_BIN"])
+    if args.frame_log is None and os.environ.get("DEPTHOS_FRAME_LOG"):
+        args.frame_log = Path(os.environ["DEPTHOS_FRAME_LOG"])
+    if args.memory_log is None and os.environ.get("DEPTHOS_MEMORY_LOG"):
+        args.memory_log = Path(os.environ["DEPTHOS_MEMORY_LOG"])
+    if args.screenshot is None and os.environ.get("DEPTHOS_SCREENSHOT"):
+        args.screenshot = Path(os.environ["DEPTHOS_SCREENSHOT"])
 
     # Configure platform environment
     if args.offscreen:
@@ -249,7 +358,7 @@ def main():
 
     # Import PyQt6
     try:
-        from PyQt6.QtCore import QUrl, QTimer, QObject, pyqtSlot
+        from PyQt6.QtCore import QUrl, QTimer, QObject, Qt, pyqtSlot
         from PyQt6.QtGui import QGuiApplication
         from PyQt6.QtQml import QQmlApplicationEngine
         from PyQt6.QtDBus import QDBusConnection
@@ -287,65 +396,331 @@ def main():
     if args.reduced_motion:
         root.setProperty("reducedMotion", True)
 
-    # Determine data source mode
-    is_mock = args.mock
-    loaded_live = False
-    endpoint = None
+    class HostBridge(QObject):
+        def __init__(self, be, sc, db_path):
+            super().__init__()
+            self.be = be
+            self.sc = sc
+            self.db_path = db_path
 
-    if not is_mock and args.db:
-        if load_from_db_path(args.db, backend):
-            loaded_live = True
-            print(f"[depthos-spatial-alpha] Loaded logical hierarchy directly from database: {args.db}")
+        @pyqtSlot()
+        def createWorkspace(self):
+            path = self.be.property("databasePath") or (str(self.db_path) if self.db_path else "")
+            if not path:
+                self.be.setProperty("onboardingState", "error")
+                self.be.setProperty("onboardingMessage", "Could not create the workspace")
+                self.be.setProperty("onboardingDetail", "No database path is selected. Nothing was written.")
+                return
+            proc = run_depthos(["--db", str(path), "init", "--default-hierarchy"])
+            if proc is None or proc.returncode != 0:
+                detail = "depthos binary was not found. Nothing was written."
+                if proc is not None:
+                    detail = (proc.stderr or proc.stdout or "init failed").strip()
+                self.be.setProperty("onboardingState", "error")
+                self.be.setProperty("onboardingMessage", "Could not create the workspace")
+                self.be.setProperty("onboardingDetail", detail)
+                return
+            try:
+                report = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                report = {}
+            if not load_from_db_path(path, self.be):
+                self.be.setProperty("onboardingState", "error")
+                self.be.setProperty("onboardingMessage", "Could not read the workspace after initialization")
+                self.be.setProperty("onboardingDetail", "The database was not modified again.")
+                return
+            outcome = str(report.get("outcome", ""))
+            if outcome == "already-initialized":
+                self.be.setProperty("onboardingMessage", "Workspace already exists")
+                self.be.setProperty("onboardingDetail", "Nothing was overwritten.")
+            else:
+                self.be.setProperty("onboardingMessage", "Workspace created")
+                self.be.setProperty("onboardingDetail", f"Initialization finished ({outcome})." if outcome else "Initialization finished.")
+            self.be.setProperty("onboardingState", "success")
+            if self.sc:
+                self.sc.syncIndices()
 
-    if not is_mock and not loaded_live:
+        @pyqtSlot()
+        def retryProbe(self):
+            choose_source(self.be, self.sc, self.db_path, allow_controller=self.db_path is None)
+
+    def show_probe_failure(be, message, detail):
+        clear_hierarchy(be)
+        be.setProperty("onboardingState", "error")
+        be.setProperty("onboardingMessage", message)
+        be.setProperty("onboardingDetail", detail)
+        be.setProperty("observerLive", False)
+        be.setProperty("observationHealth", "Unavailable")
+
+    def present_database(be, sc, db_path):
+        status, err = status_json(db_path)
+        if err or not status:
+            show_probe_failure(be, "Could not inspect the workspace database", err or "status failed")
+            return False
+        path = status.get("path") or (str(db_path) if db_path else "")
+        state = status.get("state") or "missing"
+        be.setProperty("databasePath", path)
+        be.setProperty("databaseState", state)
+        detail = status.get("detail") or ""
+        if state == "valid":
+            if not load_from_db_path(path, be):
+                show_probe_failure(be, "Could not read the workspace database", "tree failed. The file was not modified.")
+                return False
+            be.setProperty("onboardingState", "hidden")
+            if sc:
+                sc.syncIndices()
+            return True
+        clear_hierarchy(be)
+        be.setProperty("databasePath", path)
+        be.setProperty("databaseState", state)
+        be.setProperty("onboardingDetail", detail)
+        if state in ("missing", "empty"):
+            be.setProperty("onboardingState", "offer")
+            be.setProperty("onboardingMessage", "")
+        elif state in BLOCKED_DB_STATES:
+            be.setProperty("onboardingState", "blocked")
+            be.setProperty("onboardingMessage", "This database cannot be opened")
+        else:
+            be.setProperty("onboardingState", "error")
+            be.setProperty("onboardingMessage", "Could not open the workspace database")
+        return False
+
+    def try_controller(be):
         try:
             import dbus
             sbus = dbus.SessionBus()
-            if sbus.name_has_owner("org.depthos.Controller"):
-                endpoint = dbus.Interface(
-                    sbus.get_object("org.depthos.Controller", "/org/depthos/Controller"),
-                    "org.depthos.Controller1"
-                )
-                if load_from_dbus(endpoint, backend):
-                    loaded_live = True
-                    print("[depthos-spatial-alpha] Connected to org.depthos.Controller on session bus.")
+            if not sbus.name_has_owner("org.depthos.Controller"):
+                return False
+            endpoint = dbus.Interface(
+                sbus.get_object("org.depthos.Controller", "/org/depthos/Controller"),
+                "org.depthos.Controller1",
+            )
+            if not load_from_dbus(endpoint, be):
+                return False
 
-                    # Wire up QtDBus invalidation signal
-                    class SignalReceiver(QObject):
-                        def __init__(self, ep, be):
-                            super().__init__()
-                            self.ep = ep
-                            self.be = be
+            class SignalReceiver(QObject):
+                def __init__(self, ep, target):
+                    super().__init__()
+                    self.ep = ep
+                    self.target = target
 
-                        @pyqtSlot(str, int)
-                        def on_invalidated(self, instance, scopes):
-                            load_from_dbus(self.ep, self.be)
+                @pyqtSlot(str, int)
+                def on_invalidated(self, instance, scopes):
+                    load_from_dbus(self.ep, self.target)
 
-                    receiver = SignalReceiver(endpoint, backend)
-                    qbus = QDBusConnection.sessionBus()
-                    qbus.connect(
-                        "org.depthos.Controller",
-                        "/org/depthos/Controller",
-                        "org.depthos.Controller1",
-                        "invalidated",
-                        receiver.on_invalidated
-                    )
-                    # Keep receiver alive
-                    engine.receiver_ref = receiver
-        except Exception as e:
-            loaded_live = False
+            receiver = SignalReceiver(endpoint, be)
+            qbus = QDBusConnection.sessionBus()
+            qbus.connect(
+                "org.depthos.Controller",
+                "/org/depthos/Controller",
+                "org.depthos.Controller1",
+                "invalidated",
+                receiver.on_invalidated,
+            )
+            engine.receiver_ref = receiver
+            be.setProperty("onboardingState", "hidden")
+            return True
+        except Exception as exc:
+            sys.stderr.write(f"depthos-spatial-alpha: controller probe failed: {exc}\n")
+            return False
 
-    if not loaded_live:
-        print("[depthos-spatial-alpha] Running in Standalone Demo/Mock Mode (Controller offline or --mock flag set).")
+    def choose_source(be, sc, db_path, allow_controller):
+        if args.mock:
+            be.loadMock()
+            be.setProperty("onboardingState", "hidden")
+            if sc:
+                sc.syncIndices()
+            return
+        if db_path is not None:
+            # An explicit database is never replaced by the controller or by demo data.
+            present_database(be, sc, db_path)
+            return
+        if allow_controller and try_controller(be):
+            if sc:
+                sc.syncIndices()
+            return
+        present_database(be, sc, None)
 
-    if scene:
-        scene.syncIndices()
+    bridge = HostBridge(backend, scene, args.db)
+    root.setProperty("hostBridge", bridge)
+    engine.bridge_ref = bridge
+    choose_source(backend, scene, args.db, allow_controller=args.db is None)
 
+    def finish_sync():
+        state = backend.property("onboardingState")
+        if scene and state in (None, "", "hidden"):
+            scene.forceActiveFocus(Qt.FocusReason.OtherFocusReason)
+
+    finish_sync()
+
+    class FrameProbe(QObject):
+        def __init__(self, window, path):
+            super().__init__()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.file = open(path, "w", buffering=1)
+            os.chmod(path, 0o600)
+            self.last = None
+            self.before_t = None
+            self.after_t = None
+            self.count = 0
+            window.beforeRendering.connect(self.on_before, Qt.ConnectionType.DirectConnection)
+            window.afterRendering.connect(self.on_after, Qt.ConnectionType.DirectConnection)
+            window.frameSwapped.connect(self.on_swap)
+            info = {"kind": "renderer", "synthetic": False}
+            try:
+                from PyQt6.QtQuick import QQuickWindow
+                quick = window if isinstance(window, QQuickWindow) else None
+                if quick is None:
+                    from PyQt6 import sip
+                    quick = sip.cast(window, QQuickWindow)
+                ri = quick.rendererInterface()
+                api = ri.graphicsApi() if ri is not None else None
+                info["graphicsApi"] = getattr(api, "value", None)
+                info["graphicsApiName"] = str(api) if api is not None else None
+            except Exception as exc:
+                info["graphicsApiError"] = str(exc)
+            info["platform"] = os.environ.get("QT_QPA_PLATFORM", "")
+            self.file.write(json.dumps(info) + "\n")
+
+        def on_before(self):
+            self.before_t = time.perf_counter()
+
+        def on_after(self):
+            self.after_t = time.perf_counter()
+
+        def on_swap(self):
+            now = time.perf_counter()
+            interval = None if self.last is None else round((now - self.last) * 1000.0, 4)
+            render = None
+            if self.before_t is not None and self.after_t is not None and self.after_t >= self.before_t:
+                render = round((self.after_t - self.before_t) * 1000.0, 4)
+            self.last = now
+            self.count += 1
+            self.file.write(json.dumps({
+                "kind": "frame", "n": self.count, "intervalMs": interval, "renderMs": render,
+            }) + "\n")
+
+        def close(self):
+            self.file.write(json.dumps({"kind": "summary", "frames": self.count}) + "\n")
+            self.file.close()
+
+    class MemoryProbe:
+        def __init__(self, path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.file = open(path, "w", buffering=1)
+            os.chmod(path, 0o600)
+            self.timer = QTimer()
+            self.timer.timeout.connect(lambda: self.sample("tick"))
+            self.timer.start(1000)
+            self.sample("start")
+
+        def sample(self, reason):
+            data = {"t": round(time.time(), 3), "reason": reason, "pid": os.getpid()}
+            try:
+                for line in Path("/proc/self/status").read_text().splitlines():
+                    key, _, value = line.partition(":")
+                    if key in ("VmRSS", "VmHWM", "VmSize", "VmSwap", "RssAnon", "RssFile", "RssShmem"):
+                        data[key] = value.strip()
+            except OSError as exc:
+                data["statusError"] = str(exc)
+            rollup = Path("/proc/self/smaps_rollup")
+            if rollup.exists():
+                try:
+                    for line in rollup.read_text().splitlines():
+                        key, _, value = line.partition(":")
+                        if key in ("Rss", "Pss", "Private_Dirty", "Private_Clean", "Anonymous", "Shared_Clean", "Shared_Dirty"):
+                            data[key] = value.strip()
+                except OSError as exc:
+                    data["rollupError"] = str(exc)
+            drm = []
+            fdinfo = Path("/proc/self/fdinfo")
+            if fdinfo.is_dir():
+                for entry in sorted(fdinfo.iterdir()):
+                    try:
+                        text = entry.read_text(errors="replace")
+                    except OSError:
+                        continue
+                    if "drm-" in text:
+                        drm.append(text.strip())
+                    if len(drm) >= 4:
+                        break
+            if drm:
+                data["drmFdinfo"] = drm
+            self.file.write(json.dumps(data) + "\n")
+
+        def close(self):
+            self.timer.stop()
+            self.sample("exit")
+            self.file.close()
+
+    frame_probe = FrameProbe(root, args.frame_log) if args.frame_log else None
+    memory_probe = MemoryProbe(args.memory_log) if args.memory_log else None
+    if frame_probe:
+        engine.frame_probe = frame_probe
+    if memory_probe:
+        engine.memory_probe = memory_probe
+
+    def capture():
+        if not args.screenshot or scene is None:
+            return
+        # Own scene only. QQuickWindow.grabWindow() is not used: on this
+        # session the root object is exposed as QWindow and that call aborted.
+        try:
+            args.screenshot.parent.mkdir(parents=True, exist_ok=True)
+            escaped = str(args.screenshot).replace("\\", "/").replace('"', "")
+            callback = engine.evaluate(
+                '(function(result) { result.saveToFile("' + escaped + '"); })'
+            )
+            scene.grabToImage(callback)
+        except Exception as exc:
+            sys.stderr.write(f"depthos-spatial-alpha: screenshot failed: {exc}\n")
+
+    if args.screenshot:
+        delay = 700
+        if args.quit_after_ms > 0:
+            delay = max(250, min(700, args.quit_after_ms - 400))
+        def capture_and_chmod():
+            try:
+                capture()
+            except Exception as exc:
+                sys.stderr.write(f"depthos-spatial-alpha: screenshot failed: {exc}\n")
+            def tighten():
+                try:
+                    if args.screenshot.exists() and args.screenshot.stat().st_size > 0:
+                        os.chmod(args.screenshot, 0o600)
+                except Exception as exc:
+                    sys.stderr.write(f"depthos-spatial-alpha: screenshot chmod failed: {exc}\n")
+            QTimer.singleShot(250, tighten)
+        QTimer.singleShot(delay, capture_and_chmod)
     if args.quit_after_ms > 0:
-        QTimer.singleShot(args.quit_after_ms, app.quit)
+        def shutdown():
+            if memory_probe:
+                memory_probe.close()
+            if frame_probe:
+                frame_probe.close()
+            app.quit()
+        QTimer.singleShot(args.quit_after_ms, shutdown)
 
+    source = backend.property("sourceKind")
+    observer = backend.property("observerLabel")
+    onboarding = backend.property("onboardingState")
+    if args.mock or source == "demo":
+        print("[depthos-spatial-alpha] Running in Standalone Demo/Mock Mode (Controller offline or --mock flag set).")
+    elif source == "sqlite":
+        print(f"[depthos-spatial-alpha] Loaded logical hierarchy directly from database: {backend.property('databasePath')}")
+    elif source == "controller":
+        print("[depthos-spatial-alpha] Connected to org.depthos.Controller on session bus.")
     print("[depthos-spatial-alpha] Spatial viewport loaded successfully. Press H/J/K/L, Enter, Esc, /.")
-    sys.exit(app.exec())
+    sys.stderr.write(
+        f"[depthos-spatial-alpha] source={source} observer={observer} onboarding={onboarding}\n"
+    )
+    sys.stderr.write("[depthos-spatial-alpha] Viewport ready. H/J/K/L, Enter, double-click, wheel, Esc, /.\n")
+    code = app.exec()
+    if memory_probe and not memory_probe.file.closed:
+        memory_probe.close()
+    if frame_probe and not frame_probe.file.closed:
+        frame_probe.close()
+    sys.exit(code)
 
 
 if __name__ == "__main__":

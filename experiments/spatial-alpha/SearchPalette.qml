@@ -1,30 +1,31 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import "theme"
+import "Presentation.js" as Display
 
 FocusScope {
-    id: searchScope
+    id: palette
 
     property var backend: null
     property bool isOpen: false
     property bool motionOff: false
+    property bool highContrast: false
 
     signal navigate(var item)
     signal closed
 
-    visible: opacity > 0
+    visible: isOpen || opacity > 0
+    enabled: isOpen
     opacity: isOpen ? 1 : 0
     Behavior on opacity {
-        NumberAnimation {
-            duration: searchScope.motionOff ? 0 : 180
-            easing.type: Easing.OutCubic
-        }
+        NumberAnimation { duration: NeonTheme.ms(palette.motionOff, NeonTheme.modalMs) }
     }
 
     onIsOpenChanged: {
         if (isOpen) {
-            searchInput.text = "";
+            searchInput.clear();
             selectedIndex = 0;
-            searchInput.forceActiveFocus();
+            focusInput();
         }
     }
 
@@ -39,250 +40,245 @@ FocusScope {
         searchInput.forceActiveFocus();
     }
 
-    property var searchResults: (backend && isOpen) ? backend.search(searchInput.text) : []
-    property int selectedIndex: 0
+    function moveSelection(direction) {
+        if (searchResults.length)
+            selectedIndex = (selectedIndex + direction + searchResults.length) % searchResults.length;
+    }
 
-    // Backdrop click dismisses
+    function activateSelection() {
+        if (selectedIndex >= 0 && selectedIndex < searchResults.length)
+            navigate(searchResults[selectedIndex]);
+    }
+
+    function selectTone(kind) {
+        return kind === "world" ? NeonTheme.lavender :
+            kind === "workspace" ? NeonTheme.emerald : NeonTheme.cyan;
+    }
+
+    // The markup is fixed. Escape hierarchy names before adding a match span.
+    function highlightName(name) {
+        const value = Display.safeText(name);
+        const query = searchInput.text.trim().replace(/^[@#!]/, "").trim();
+        const index = query.length ? value.toLowerCase().indexOf(query.toLowerCase()) : -1;
+        const escape = text => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        if (index < 0)
+            return escape(value);
+        const end = index + query.length;
+        return escape(value.slice(0, index)) + "<font color='" + NeonTheme.cyan + "'>"
+            + escape(value.slice(index, end)) + "</font>" + escape(value.slice(end));
+    }
+
+    property var searchResults: backend && isOpen ? backend.search(searchInput.text) : []
+    property int selectedIndex: 0
+    onSearchResultsChanged: selectedIndex = Math.max(0, Math.min(selectedIndex, searchResults.length - 1))
+
     Rectangle {
         anchors.fill: parent
-        color: "#00000088"
+        color: NeonTheme.scrim
         MouseArea {
             anchors.fill: parent
-            onClicked: searchScope.dismiss()
+            onClicked: palette.dismiss()
         }
     }
 
-    // Modal Box centered near top
     Rectangle {
-        id: modalBox
-        width: Math.min(680, searchScope.width - 48)
-        height: Math.min(480, 72 + resultsList.contentHeight)
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: searchScope.isOpen ? 80 : 50
-        radius: 16
-        color: "#0F172A"
-        border.color: "#38BDF8"
-        border.width: 1.5
+        id: panel
+        anchors.centerIn: parent
+        width: Math.min(670, parent.width - 32)
+        height: Math.min(446, parent.height - 44)
+        radius: NeonTheme.cardRadius
+        color: palette.highContrast ? NeonTheme.contrastPanel : NeonTheme.panel
+        border.color: NeonTheme.cyan
+        border.width: 1
         clip: true
 
-        Behavior on y {
-            NumberAnimation {
-                duration: searchScope.motionOff ? 0 : 200
-                easing.type: Easing.OutCubic
-            }
-        }
+        MouseArea { anchors.fill: parent }
 
         Column {
             anchors.fill: parent
-            anchors.margins: 14
-            spacing: 10
+            anchors.margins: 17
+            spacing: 11
 
-            // Search Input Row
-            Row {
+            Item {
                 width: parent.width
-                height: 40
-                spacing: 12
-
-                Text {
+                height: 30
+                NeonLabel {
+                    anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "🔍"
-                    font.pixelSize: 18
+                    text: "NAVIGATE HIERARCHY"
+                    color: NeonTheme.cyan
                 }
-
-                TextInput {
-                    id: searchInput
-                    objectName: "searchInput"
-                    width: parent.width - 120
-                    height: parent.height
-                    verticalAlignment: TextInput.AlignVCenter
-                    color: "#F8FAFC"
-                    font.pixelSize: 15
-                    focus: searchScope.isOpen
-                    clip: true
-                    selectByMouse: true
-
-                    Text {
-                        anchors.fill: parent
-                        verticalAlignment: Text.AlignVCenter
-                        text: "Search Worlds, Workspaces, and Desktops... (type to filter)"
-                        color: "#64748B"
-                        font.pixelSize: 14
-                        visible: !searchInput.text && !searchInput.inputMethodComposing
-                    }
-
-                    onTextChanged: {
-                        searchScope.selectedIndex = 0;
-                    }
-
-                    Keys.onPressed: event => {
-                        if (event.key === Qt.Key_Escape) {
-                            searchScope.dismiss();
-                            event.accepted = true;
-                        } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Tab) {
-                            if (searchScope.searchResults.length > 0) {
-                                searchScope.selectedIndex = (searchScope.selectedIndex + 1) % searchScope.searchResults.length;
-                            }
-                            event.accepted = true;
-                        } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Backtab) {
-                            if (searchScope.searchResults.length > 0) {
-                                searchScope.selectedIndex = (searchScope.selectedIndex - 1 + searchScope.searchResults.length) % searchScope.searchResults.length;
-                            }
-                            event.accepted = true;
-                        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                            if (searchScope.searchResults.length > 0 && searchScope.selectedIndex >= 0 && searchScope.selectedIndex < searchScope.searchResults.length) {
-                                searchScope.navigate(searchScope.searchResults[searchScope.selectedIndex]);
-                            }
-                            event.accepted = true;
-                        }
-                    }
-                }
-
-                Rectangle {
+                NeonButton {
+                    anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    height: 22
-                    width: escBadge.implicitWidth + 12
-                    radius: 4
-                    color: "#1E293B"
-                    border.color: "#334155"
-                    border.width: 1
-
-                    Text {
-                        id: escBadge
-                        anchors.centerIn: parent
-                        textFormat: Text.PlainText
-                        text: "Esc to close"
-                        color: "#94A3B8"
-                        font.pixelSize: 10
-                    }
+                    compact: true
+                    text: "Close · Esc"
+                    onClicked: palette.dismiss()
+                    Keys.onEscapePressed: palette.dismiss()
                 }
             }
 
             Rectangle {
                 width: parent.width
-                height: 1
-                color: "#1E293B"
+                height: 48
+                radius: NeonTheme.buttonRadius
+                color: NeonTheme.background
+                border.width: searchInput.activeFocus ? 2 : 1
+                border.color: searchInput.activeFocus ? NeonTheme.cyan : NeonTheme.border
+
+                NeonText {
+                    id: searchGlyph
+                    x: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "⌕"
+                    color: NeonTheme.cyan
+                    font.pixelSize: 21
+                }
+
+                TextInput {
+                    id: searchInput
+                    objectName: "searchInput"
+                    anchors.left: searchGlyph.right
+                    anchors.leftMargin: 10
+                    anchors.right: parent.right
+                    anchors.rightMargin: 12
+                    height: parent.height
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: NeonTheme.text
+                    selectionColor: NeonTheme.selected
+                    selectedTextColor: NeonTheme.text
+                    font.pixelSize: NeonTheme.bodySize
+                    focus: palette.isOpen
+                    clip: true
+                    selectByMouse: true
+                    Accessible.name: "Search worlds, workspaces and desktops"
+
+                    NeonText {
+                        anchors.fill: parent
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                        text: "Search worlds, workspaces, and desktops"
+                        color: NeonTheme.muted
+                        visible: !searchInput.text && !searchInput.inputMethodComposing
+                    }
+
+                    onTextChanged: palette.selectedIndex = 0
+                    Keys.onPressed: event => {
+                        switch (event.key) {
+                        case Qt.Key_Escape: palette.dismiss(); break;
+                        case Qt.Key_Down:
+                        case Qt.Key_Tab: palette.moveSelection(1); break;
+                        case Qt.Key_Up:
+                        case Qt.Key_Backtab: palette.moveSelection(-1); break;
+                        case Qt.Key_Return:
+                        case Qt.Key_Enter: palette.activateSelection(); break;
+                        default: return;
+                        }
+                        event.accepted = true;
+                    }
+                }
             }
 
-            // Results List
             ListView {
-                id: resultsList
+                id: results
+                objectName: "searchResults"
                 width: parent.width
-                height: Math.min(380, count * 52)
+                height: Math.max(24, panel.height - 156)
+                spacing: 3
                 clip: true
-                model: searchScope.searchResults
-                currentIndex: searchScope.selectedIndex
+                boundsBehavior: Flickable.StopAtBounds
+                model: palette.searchResults
+                currentIndex: palette.selectedIndex
+
+                onCurrentIndexChanged: if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
 
                 delegate: Rectangle {
-                    id: resultDelegate
+                    id: result
                     required property var modelData
                     required property int index
-
-                    width: resultsList.width
-                    height: 48
-                    radius: 8
-                    color: searchScope.selectedIndex === resultDelegate.index ? "#1E293B" : "transparent"
-                    border.color: searchScope.selectedIndex === resultDelegate.index ? "#38BDF8" : "transparent"
-                    border.width: 1
+                    readonly property bool selected: palette.selectedIndex === index
+                    width: results.width
+                    height: 53
+                    radius: NeonTheme.buttonRadius
+                    color: selected ? NeonTheme.selected : NeonTheme.transparent
+                    border.color: selected ? (palette.highContrast ? NeonTheme.focus : NeonTheme.cyan) : NeonTheme.transparent
+                    border.width: selected ? 2 : 0
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: Display.safeText(modelData.name)
+                    Accessible.description: Display.safeText(modelData.breadcrumb || modelData.detail)
+                    Accessible.selected: selected
+                    Accessible.onPressAction: palette.navigate(modelData)
 
                     Row {
                         anchors.fill: parent
-                        anchors.margins: 10
-                        spacing: 12
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        spacing: 9
 
-                        // Kind Badge
-                        Rectangle {
+                        NeonBadge {
+                            id: category
                             anchors.verticalCenter: parent.verticalCenter
-                            height: 22
-                            width: kindLabel.implicitWidth + 12
-                            radius: 4
-                            color: {
-                                switch (resultDelegate.modelData.kind) {
-                                case "world":
-                                    return "#312E81";
-                                case "workspace":
-                                    return "#064E3B";
-                                case "desktop":
-                                    return "#1E3A8A";
-                                default:
-                                    return "#334155";
-                                }
-                            }
-
-                            Text {
-                                id: kindLabel
-                                anchors.centerIn: parent
-                                textFormat: Text.PlainText
-                                text: resultDelegate.modelData.kind.toUpperCase()
-                                color: {
-                                    switch (resultDelegate.modelData.kind) {
-                                    case "world":
-                                        return "#C7D2FE";
-                                    case "workspace":
-                                        return "#A7F3D0";
-                                    case "desktop":
-                                        return "#BFDBFE";
-                                    default:
-                                        return "#E2E8F0";
-                                    }
-                                }
-                                font.pixelSize: 9
-                                font.weight: Font.Bold
-                            }
+                            width: 92
+                            label: result.modelData.kind.toUpperCase()
+                            tone: palette.selectTone(result.modelData.kind)
                         }
 
-                        // Title & Detail
                         Column {
+                            width: Math.max(0, parent.width - category.width - jump.width - 18)
                             anchors.verticalCenter: parent.verticalCenter
-                            width: parent.width - 120
-                            spacing: 2
+                            spacing: 3
 
-                            Text {
-                                textFormat: Text.PlainText
-                                text: resultDelegate.modelData.name
-                                color: "#F8FAFC"
-                                font.pixelSize: 13
-                                font.weight: Font.Medium
-                                elide: Text.ElideRight
+                            NeonText {
                                 width: parent.width
+                                textFormat: Text.StyledText
+                                text: palette.highlightName(result.modelData.name)
+                                elide: Text.ElideRight
+                                font.weight: Font.DemiBold
                             }
 
-                            Text {
-                                textFormat: Text.PlainText
-                                text: resultDelegate.modelData.detail
-                                color: "#94A3B8"
-                                font.pixelSize: 11
-                                elide: Text.ElideRight
+                            NeonText {
                                 width: parent.width
+                                text: Display.safeText(result.modelData.breadcrumb || result.modelData.detail)
+                                elide: Text.ElideRight
+                                color: NeonTheme.muted
+                                font.pixelSize: NeonTheme.detailSize
                             }
                         }
 
-                        Text {
+                        NeonText {
+                            id: jump
+                            width: 15
                             anchors.verticalCenter: parent.verticalCenter
-                            textFormat: Text.PlainText
-                            text: searchScope.selectedIndex === resultDelegate.index ? "Jump ↵" : ""
-                            color: "#38BDF8"
-                            font.pixelSize: 11
-                            font.weight: Font.DemiBold
+                            text: result.selected ? "↵" : ""
+                            color: NeonTheme.emerald
                         }
                     }
 
                     MouseArea {
                         anchors.fill: parent
                         hoverEnabled: true
-                        onEntered: searchScope.selectedIndex = resultDelegate.index
-                        onClicked: searchScope.navigate(resultDelegate.modelData)
+                        cursorShape: Qt.PointingHandCursor
+                        onEntered: palette.selectedIndex = result.index
+                        onClicked: palette.navigate(result.modelData)
                     }
                 }
 
-                // Empty result text
-                Text {
+                NeonText {
                     anchors.centerIn: parent
-                    visible: searchScope.searchResults.length === 0 && searchInput.text.trim() !== ""
-                    textFormat: Text.PlainText
-                    text: "No matching worlds, workspaces, or desktops found"
-                    color: "#64748B"
-                    font.pixelSize: 13
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    visible: palette.searchResults.length === 0
+                    text: searchInput.text.trim() ? "No matching items" : "Type to find an item in your hierarchy."
+                    color: NeonTheme.muted
                 }
+            }
+
+            NeonText {
+                width: parent.width
+                text: "↑ / ↓   Select    ·    ↵   Open    ·    Esc   Close"
+                color: NeonTheme.precision
+                font.pixelSize: NeonTheme.detailSize
+                elide: Text.ElideRight
             }
         }
     }

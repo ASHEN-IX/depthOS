@@ -1,63 +1,31 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import "theme"
+import "Presentation.js" as Display
 
-Rectangle {
+CyberCard {
     id: card
-
     property var workspace: null
     property var desktops: []
-    property int observedWindowCount: 0
+    property int observedWindowCount: -1
     property string statusBadge: "Unavailable"
-    property bool isSelected: false
-    property bool isFocused: false
-    property bool motionOff: false
-    readonly property bool available: !(card.workspace && card.workspace.unavailable)
-
-    signal chosen
-    signal activated
+    property string freshness: ""
+    property bool demoSource: false
+    readonly property string name: Display.safeText(workspace ? workspace.name : "Workspace")
+    readonly property string directory: Display.safeText(workspace ? workspace.rootDirectory : "")
+    readonly property string branch: Display.safeText(workspace ? workspace.gitBranch : "")
 
     implicitWidth: 380
-    implicitHeight: 280
-    radius: 16
-
-    opacity: card.available ? 1 : 0.45
-    color: card.isSelected ? "#1E293B" : "#131C2E"
-    border.width: card.isSelected || card.isFocused ? 2.5 : 1
-    border.color: card.isFocused ? "#38BDF8" : (card.isSelected ? "#818CF8" : "#2A3756")
-
-    scale: card.isSelected ? 1.03 : (hoverArea.containsMouse ? 1.015 : 1.0)
-    Behavior on scale {
-        NumberAnimation {
-            duration: card.motionOff ? 0 : 200
-            easing.type: Easing.OutCubic
-        }
-    }
-    Behavior on border.color {
-        ColorAnimation {
-            duration: card.motionOff ? 0 : 180
-        }
-    }
-
-    Rectangle {
-        anchors.fill: parent
-        anchors.margins: -4
-        radius: card.radius + 4
-        color: "transparent"
-        border.width: card.isFocused ? 2 : (card.isSelected ? 1.5 : 0)
-        border.color: card.isFocused ? "#38BDF8" : "#818CF8"
-        opacity: card.isFocused ? 0.6 : (card.isSelected ? 0.35 : 0)
-        z: -1
-        Behavior on opacity {
-            NumberAnimation {
-                duration: card.motionOff ? 0 : 200
-            }
-        }
-    }
+    implicitHeight: 228
+    radius: 14
+    available: !(workspace && workspace.unavailable)
+    accessibleLabel: name
+    accessibleDescription: Display.countLabel(desktops.length, "logical desktop", "logical desktops")
 
     Column {
         anchors.fill: parent
-        anchors.margins: 20
-        spacing: 12
+        anchors.margins: 17
+        spacing: 8
 
         Row {
             width: parent.width
@@ -65,175 +33,110 @@ Rectangle {
 
             Rectangle {
                 width: 36
-                height: 36
-                radius: 10
-                color: "#312E81"
-                border.color: "#4338CA"
-                border.width: 1
-
-                Text {
+                height: width
+                radius: NeonTheme.buttonRadius
+                color: NeonTheme.tint(NeonTheme.violet, 0.14)
+                border.color: NeonTheme.tint(NeonTheme.violet, 0.48)
+                NeonText {
                     anchors.centerIn: parent
+                    color: NeonTheme.lavender
+                    font.pixelSize: 20
                     text: "◫"
-                    font.pixelSize: 18
-                    color: "#A5B4FC"
                 }
             }
 
-            Column {
-                width: parent.width - 46 - badgeItem.width - 10
+            NeonText {
+                width: parent.width - 56 - status.width
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-
-                Text {
-                    textFormat: Text.PlainText
-                    text: card.workspace ? card.workspace.name : "Workspace"
-                    color: "#F8FAFC"
-                    font.pixelSize: 17
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                    width: parent.width
-                }
-
-                Text {
-                    textFormat: Text.PlainText
-                    text: (card.workspace && card.workspace.gitBranch) ? "git: " + card.workspace.gitBranch : "Root: " + (card.workspace ? card.workspace.rootDirectory : "~")
-                    color: "#818CF8"
-                    font.pixelSize: 11
-                    elide: Text.ElideRight
-                    width: parent.width
-                }
+                text: card.name
+                font.pixelSize: 18
+                font.weight: Font.DemiBold
+                elide: Text.ElideRight
             }
 
             StatusBadge {
-                id: badgeItem
+                id: status
                 anchors.verticalCenter: parent.verticalCenter
                 status: card.statusBadge
             }
         }
 
-        Text {
-            textFormat: Text.PlainText
-            text: (card.workspace && card.workspace.description) ? card.workspace.description : "No description provided"
-            color: "#94A3B8"
-            font.pixelSize: 12
+        NeonText {
             width: parent.width
+            visible: text.length > 0
+            text: Display.safeText(card.workspace ? card.workspace.description : "")
+            color: NeonTheme.precision
+            font.pixelSize: NeonTheme.detailSize
             elide: Text.ElideRight
-            maximumLineCount: 2
-            wrapMode: Text.WordWrap
+        }
+
+        NeonText {
+            width: parent.width
+            visible: text.length > 0
+            text: card.directory
+            color: NeonTheme.muted
+            font.family: "monospace"
+            font.pixelSize: NeonTheme.detailSize
+            elide: Text.ElideMiddle
+        }
+
+        NeonText {
+            width: parent.width
+            visible: text.length > 0
+            text: card.branch ? "git · " + card.branch : ""
+            color: NeonTheme.lavender
+            font.family: "monospace"
+            font.pixelSize: NeonTheme.detailSize
+            elide: Text.ElideRight
         }
 
         Rectangle {
             width: parent.width
             height: 1
-            color: "#27354F"
+            color: NeonTheme.border
         }
 
         Row {
             width: parent.width
             spacing: 8
 
-            Text {
-                textFormat: Text.PlainText
-                text: "LINKED DESKTOPS (" + (card.desktops ? card.desktops.length : 0) + ")"
-                color: "#64748B"
-                font.pixelSize: 10
-                font.weight: Font.Bold
+            NeonLabel {
+                text: "LINKED DESKTOPS · " + card.desktops.length
             }
 
-            Item {
-                width: 1
-                height: 1
-            }
-
-            Text {
-                textFormat: Text.PlainText
-                text: card.observedWindowCount + " windows observed"
-                color: "#A5B4FC"
-                font.pixelSize: 10
+            NeonText {
+                visible: card.observedWindowCount >= 0
+                text: card.demoSource ? Display.countLabel(card.observedWindowCount, "sample window", "sample windows")
+                    : Display.countLabel(card.observedWindowCount, "observed window", "observed windows")
+                color: NeonTheme.precision
+                font.pixelSize: NeonTheme.labelSize
             }
         }
 
         Row {
+            id: desktopsRow
             width: parent.width
-            height: 64
-            spacing: 8
+            spacing: 6
 
             Repeater {
-                model: card.desktops ? card.desktops.slice(0, 3) : []
-                delegate: Rectangle {
-                    id: deskDelegate
+                model: card.desktops.slice(0, 3)
+
+                NeonBadge {
                     required property var modelData
-                    required property int index
-                    width: (card.width - 40 - 16) / 3
-                    height: 64
-                    radius: 8
-                    color: "#0F172A"
-                    border.color: "#26354D"
-                    border.width: 1
-
-                    Column {
-                        anchors.fill: parent
-                        anchors.margins: 8
-                        spacing: 4
-
-                        Text {
-                            textFormat: Text.PlainText
-                            text: deskDelegate.modelData.name
-                            color: "#E2E8F0"
-                            font.pixelSize: 11
-                            font.weight: Font.Medium
-                            elide: Text.ElideRight
-                            width: parent.width
-                        }
-
-                        Text {
-                            textFormat: Text.PlainText
-                            text: deskDelegate.modelData.role || "Logical Desktop"
-                            color: "#64748B"
-                            font.pixelSize: 9
-                            elide: Text.ElideRight
-                            width: parent.width
-                        }
-
-                        Row {
-                            spacing: 3
-                            Repeater {
-                                model: Math.min(4, Math.max(1, deskDelegate.index + 1))
-                                delegate: Rectangle {
-                                    width: 8
-                                    height: 6
-                                    radius: 1
-                                    color: "#475569"
-                                }
-                            }
-                        }
-                    }
+                    width: Math.min(implicitWidth, (desktopsRow.width - 12) / Math.max(1, Math.min(3, card.desktops.length)))
+                    label: Display.safeText(modelData.name)
+                    tone: NeonTheme.precision
                 }
             }
         }
 
-        Row {
-            anchors.right: parent.right
-            spacing: 6
-
-            Text {
-                textFormat: Text.PlainText
-                text: !card.available ? "Unavailable" : (card.isSelected ? "Double-click or Enter to open →" : "Click to select · double-click to open")
-                color: card.isSelected ? "#818CF8" : "#64748B"
-                font.pixelSize: 11
-                font.weight: Font.Medium
-            }
+        NeonText {
+            visible: text.length > 0
+            width: parent.width
+            text: card.freshness
+            color: NeonTheme.muted
+            font.pixelSize: NeonTheme.labelSize
+            elide: Text.ElideRight
         }
-    }
-
-    MouseArea {
-        id: hoverArea
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: card.available ? Qt.PointingHandCursor : Qt.ArrowCursor
-        onClicked: if (card.available)
-            card.chosen()
-        onDoubleClicked: if (card.available)
-            card.activated()
     }
 }

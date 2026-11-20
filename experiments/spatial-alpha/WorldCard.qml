@@ -1,228 +1,117 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import "theme"
+import "Presentation.js" as Display
 
-Rectangle {
+CyberCard {
     id: card
-
     property var world: null
     property var workspaces: []
-    property bool isSelected: false
-    property bool isFocused: false
-    property bool motionOff: false
-    readonly property bool available: !(card.world && card.world.unavailable)
+    property int desktopCount: 0
+    property int identityIndex: 0
+    property bool cameraFocused: false
+    property color identityTone: identityIndex % 2 ? NeonTheme.lavender : NeonTheme.cyan
+    readonly property string worldName: Display.safeText(world ? world.name : "World")
 
-    signal chosen
-    signal activated
+    implicitWidth: 420
+    implicitHeight: 316
+    available: !(world && world.unavailable)
+    accessibleLabel: worldName
+    accessibleDescription: Display.countLabel(workspaces.length, "workspace", "workspaces") + ", "
+        + Display.countLabel(desktopCount, "logical desktop", "logical desktops")
 
-    implicitWidth: 360
-    implicitHeight: 260
-    radius: 16
+    Item {
+        id: art
+        x: 2
+        y: 2
+        width: card.width - 4
+        height: card.height * 0.58
 
-    opacity: card.available ? 1 : 0.45
-    color: card.isSelected ? "#1E293B" : "#131C2E"
-    border.width: card.isSelected || card.isFocused ? 2.5 : 1
-    border.color: card.isFocused ? "#38BDF8" : (card.isSelected ? "#818CF8" : "#2A3756")
-
-    scale: card.isSelected ? 1.03 : (hoverArea.containsMouse ? 1.015 : 1.0)
-    Behavior on scale {
-        NumberAnimation {
-            duration: card.motionOff ? 0 : 200
-            easing.type: Easing.OutCubic
+        Rectangle {
+            anchors.fill: parent
+            radius: card.radius - 1
+            visible: !card.highContrast
+            gradient: Gradient {
+                GradientStop {
+                    position: 0
+                    color: NeonTheme.tint(card.cameraFocused ? NeonTheme.emerald : card.identityTone,
+                        card.cameraFocused ? 0.24 : 0.17)
+                }
+                GradientStop { position: 1; color: NeonTheme.transparent }
+            }
         }
-    }
-    Behavior on border.color {
-        ColorAnimation {
-            duration: card.motionOff ? 0 : 180
+
+        WorldInsignia {
+            anchors.centerIn: parent
+            width: parent.width - 20
+            height: parent.height - 2
+            ink: card.cameraFocused ? NeonTheme.emerald : card.identityTone
+            variant: card.identityIndex
+            simple: card.lowEffects || card.highContrast
+        }
+
+        NeonLabel {
+            x: 17
+            y: 15
+            text: "WORLD"
+            color: card.cameraFocused ? NeonTheme.emerald : NeonTheme.precision
+        }
+
+        NeonBadge {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.margins: 14
+            visible: card.isSelected || !card.available
+            label: card.available ? "Selected" : "Unavailable"
+            tone: card.available ? NeonTheme.emerald : NeonTheme.danger
+            dot: true
         }
     }
 
     Rectangle {
-        anchors.fill: parent
-        anchors.margins: -4
-        radius: card.radius + 4
-        color: "transparent"
-        border.width: card.isFocused ? 2 : (card.isSelected ? 1.5 : 0)
-        border.color: card.isFocused ? "#38BDF8" : "#818CF8"
-        opacity: card.isFocused ? 0.6 : (card.isSelected ? 0.35 : 0)
-        z: -1
-        Behavior on opacity {
-            NumberAnimation {
-                duration: card.motionOff ? 0 : 200
-            }
-        }
+        width: card.width - 36
+        x: 18
+        y: art.height + 2
+        height: 1
+        color: card.isSelected ? NeonTheme.tint(NeonTheme.emerald, 0.42) : NeonTheme.border
     }
 
     Column {
-        anchors.fill: parent
-        anchors.margins: 20
-        spacing: 12
+        x: 18
+        y: art.height + 14
+        width: card.width - 36
+        spacing: 6
 
-        Row {
+        NeonText {
             width: parent.width
-            spacing: 12
-
-            Rectangle {
-                width: 44
-                height: 44
-                radius: 12
-                color: (card.world && card.world.color) ? card.world.color : "#6366F1"
-                opacity: 0.9
-
-                Text {
-                    anchors.centerIn: parent
-                    text: (card.world && card.world.icon) ? card.world.icon : "🌐"
-                    font.pixelSize: 22
-                }
-            }
-
-            Column {
-                width: parent.width - 56 - countBadge.width
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 3
-
-                Text {
-                    id: worldTitle
-                    textFormat: Text.PlainText
-                    text: card.world ? card.world.name : "World"
-                    color: "#F8FAFC"
-                    font.pixelSize: 18
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                    width: parent.width
-                }
-
-                Text {
-                    textFormat: Text.PlainText
-                    text: "Level A: World Overview"
-                    color: "#94A3B8"
-                    font.pixelSize: 11
-                }
-            }
-
-            Rectangle {
-                id: countBadge
-                anchors.verticalCenter: parent.verticalCenter
-                height: 24
-                width: countText.implicitWidth + 14
-                radius: 12
-                color: "#1E293B"
-                border.color: "#334155"
-                border.width: 1
-
-                Text {
-                    id: countText
-                    anchors.centerIn: parent
-                    textFormat: Text.PlainText
-                    text: (card.workspaces ? card.workspaces.length : 0) + " Workspaces"
-                    color: "#94A3B8"
-                    font.pixelSize: 11
-                    font.weight: Font.Medium
-                }
-            }
-        }
-
-        Text {
-            textFormat: Text.PlainText
-            text: (card.world && card.world.description) ? card.world.description : "No context summary provided"
-            color: "#CBD5E1"
-            font.pixelSize: 12
-            width: parent.width
+            text: card.worldName
+            font.pixelSize: card.width > 340 ? 25 : 20
+            font.weight: Font.DemiBold
             elide: Text.ElideRight
-            maximumLineCount: 2
-            wrapMode: Text.WordWrap
         }
 
-        Rectangle {
+        NeonText {
             width: parent.width
-            height: 1
-            color: "#27354F"
-        }
-
-        Text {
-            textFormat: Text.PlainText
-            text: "WORKSPACES IN THIS WORLD"
-            color: "#64748B"
-            font.pixelSize: 10
-            font.weight: Font.Bold
+            visible: text.length > 0
+            text: Display.safeText(card.world && card.world.description)
+            color: NeonTheme.precision
+            font.pixelSize: NeonTheme.detailSize
+            maximumLineCount: 1
+            elide: Text.ElideRight
         }
 
         Flow {
             width: parent.width
             spacing: 6
-            clip: true
-
-            Repeater {
-                model: card.workspaces ? card.workspaces.slice(0, 4) : []
-                delegate: Rectangle {
-                    id: chipDelegate
-                    required property var modelData
-                    height: 24
-                    width: Math.min(card.width - 40, chipLabel.implicitWidth + 16)
-                    radius: 6
-                    color: "#0F172A"
-                    border.color: "#334155"
-                    border.width: 1
-
-                    Text {
-                        id: chipLabel
-                        anchors.centerIn: parent
-                        textFormat: Text.PlainText
-                        text: chipDelegate.modelData.name
-                        color: "#E2E8F0"
-                        font.pixelSize: 11
-                        elide: Text.ElideRight
-                        width: parent.width - 12
-                        horizontalAlignment: Text.AlignHCenter
-                    }
-                }
+            topPadding: 2
+            NeonBadge {
+                tone: card.cameraFocused ? NeonTheme.emerald : NeonTheme.precision
+                label: Display.countLabel(card.workspaces.length, "workspace", "workspaces")
             }
-
-            Rectangle {
-                visible: card.workspaces && card.workspaces.length > 4
-                height: 24
-                width: moreText.implicitWidth + 12
-                radius: 6
-                color: "#0F172A"
-                border.color: "#334155"
-
-                Text {
-                    id: moreText
-                    anchors.centerIn: parent
-                    textFormat: Text.PlainText
-                    text: "+" + (card.workspaces.length - 4) + " more"
-                    color: "#94A3B8"
-                    font.pixelSize: 11
-                }
+            NeonBadge {
+                tone: NeonTheme.precision
+                label: Display.countLabel(card.desktopCount, "desktop", "desktops")
             }
         }
-
-        Item {
-            width: 1
-            height: 1
-        }
-
-        Row {
-            anchors.right: parent.right
-            spacing: 6
-
-            Text {
-                textFormat: Text.PlainText
-                text: !card.available ? "Unavailable" : (card.isSelected ? "Double-click or Enter to open →" : "Click to select · double-click to open")
-                color: card.isSelected ? "#818CF8" : "#64748B"
-                font.pixelSize: 11
-                font.weight: Font.Medium
-            }
-        }
-    }
-
-    MouseArea {
-        id: hoverArea
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: card.available ? Qt.PointingHandCursor : Qt.ArrowCursor
-        onClicked: if (card.available)
-            card.chosen()
-        onDoubleClicked: if (card.available)
-            card.activated()
     }
 }

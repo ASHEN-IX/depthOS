@@ -1,272 +1,110 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import "theme"
+import "Presentation.js" as Display
 
-Rectangle {
+CyberCard {
     id: card
-
     property var window: null
-    property bool isSelected: false
-    property bool isFocused: false
-    property bool showTitles: false // Privacy redaction toggle
-    property bool motionOff: false
-    // Demo fixtures may carry sample "Live" strings. The painted badge must not.
+    property bool showTitles: false
     property bool demoSource: false
-    readonly property bool available: !(card.window && card.window.unavailable)
-    readonly property string paintedStatus: card.demoSource ? "Demo" : ((card.window && card.window.statusBadge) ? card.window.statusBadge : "Unknown")
-
-    signal chosen
-    signal activated
+    readonly property bool protectedIdentity: !!(window && (window.excludeFromCapture || window.protectedIdentity))
+    readonly property string appIdentity: protectedIdentity ? "Protected window" :
+        Display.safeText(window && (window.appName || window.appId)) || "Unknown application"
+    readonly property string safeCaption: !protectedIdentity && showTitles && window && !window.titleRedacted
+        ? Display.safeText(window.title) : ""
+    readonly property string paintedStatus: demoSource ? "Demo" :
+        ((window && window.statusBadge) ? window.statusBadge : "Unknown")
 
     implicitWidth: 320
-    implicitHeight: 220
-    radius: 14
-
-    opacity: card.available ? 1 : 0.45
-    color: card.isSelected ? "#1E293B" : "#131C2E"
-    border.width: card.isSelected || card.isFocused ? 2.5 : 1
-    border.color: card.isFocused ? "#38BDF8" : (card.isSelected ? "#818CF8" : "#2A3756")
-
-    scale: card.isSelected ? 1.03 : (hoverArea.containsMouse ? 1.015 : 1.0)
-    Behavior on scale {
-        NumberAnimation {
-            duration: card.motionOff ? 0 : 200
-            easing.type: Easing.OutCubic
-        }
-    }
-    Behavior on border.color {
-        ColorAnimation {
-            duration: card.motionOff ? 0 : 180
-        }
-    }
-
-    Rectangle {
-        anchors.fill: parent
-        anchors.margins: -4
-        radius: card.radius + 4
-        color: "transparent"
-        border.width: card.isFocused ? 2 : (card.isSelected ? 1.5 : 0)
-        border.color: card.isFocused ? "#38BDF8" : "#818CF8"
-        opacity: card.isFocused ? 0.6 : (card.isSelected ? 0.35 : 0)
-        z: -1
-        Behavior on opacity {
-            NumberAnimation {
-                duration: card.motionOff ? 0 : 200
-            }
-        }
-    }
+    implicitHeight: 200
+    radius: 12
+    available: !(window && window.unavailable)
+    accessibleLabel: appIdentity
+    accessibleDescription: safeCaption || (protectedIdentity ? "Protected identity" : "Window title hidden")
 
     Column {
         anchors.fill: parent
-        anchors.margins: 14
-        spacing: 10
+        anchors.margins: 15
+        spacing: 9
 
         Row {
             width: parent.width
-            spacing: 10
-
-            Rectangle {
-                width: 32
-                height: 32
-                radius: 8
-                color: "#1E293B"
-                border.color: "#334155"
-                border.width: 1
-
-                Text {
-                    anchors.centerIn: parent
-                    text: {
-                        if (!card.window)
-                            return "🗔";
-                        const id = String(card.window.appId || "").toLowerCase();
-                        if (id.includes("kate") || id.includes("code"))
-                            return "📝";
-                        if (id.includes("alacritty") || id.includes("terminal"))
-                            return "💻";
-                        if (id.includes("firefox") || id.includes("chrome") || id.includes("browser"))
-                            return "🌐";
-                        if (id.includes("dolphin") || id.includes("file"))
-                            return "📁";
-                        if (id.includes("creator"))
-                            return "⚙️";
-                        return "🗔";
-                    }
-                    font.pixelSize: 16
-                }
-            }
-
-            Column {
-                width: parent.width - 42 - statusBadge.width - 6
+            spacing: 8
+            NeonText {
+                width: Math.max(0, parent.width - status.width - 8)
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-
-                Text {
-                    id: appNameText
-                    textFormat: Text.PlainText
-                    text: (card.window && card.window.appName) ? card.window.appName : (card.window ? card.window.appId : "Window")
-                    color: "#F8FAFC"
-                    font.pixelSize: 13
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                    width: parent.width
-                }
-
-                Text {
-                    id: safeIdentityText
-                    textFormat: Text.PlainText
-                    text: card.showTitles ? ((card.window && card.window.title) ? card.window.title : "No title") : ((card.window && card.window.appId) ? card.window.appId : "Protected Identity")
-                    color: card.showTitles ? "#CBD5E1" : "#818CF8"
-                    font.pixelSize: 11
-                    elide: Text.ElideRight
-                    width: parent.width
-                }
+                text: card.appIdentity
+                font.pixelSize: 16
+                font.weight: Font.DemiBold
+                elide: Text.ElideRight
             }
+            StatusBadge { id: status; status: card.paintedStatus }
+        }
 
-            StatusBadge {
-                id: statusBadge
-                anchors.verticalCenter: parent.verticalCenter
-                status: card.paintedStatus
-            }
+        NeonText {
+            width: parent.width
+            text: card.protectedIdentity ? "Protected identity" : card.safeCaption ||
+                (card.showTitles ? "Title unavailable" : "Title hidden")
+            color: NeonTheme.muted
+            font.pixelSize: NeonTheme.detailSize
+            elide: Text.ElideRight
         }
 
         Rectangle {
-            id: previewBox
             width: parent.width
-            height: 100
-            radius: 8
-            color: "#0B1020"
-            border.color: "#1E293B"
+            height: 76
+            radius: NeonTheme.buttonRadius
+            color: card.highContrast ? NeonTheme.contrastPanel : NeonTheme.background
+            border.color: NeonTheme.border
             border.width: 1
-            clip: true
 
-            Column {
+            NeonText {
                 anchors.centerIn: parent
-                spacing: 6
-                visible: !(card.window && card.window.minimized)
-
-                Repeater {
-                    model: 4
-                    delegate: Rectangle {
-                        required property int index
-                        width: index === 0 ? 140 : (index === 1 ? 200 : (index === 2 ? 160 : 100))
-                        height: 5
-                        radius: 2
-                        color: index === 0 ? "#4338CA" : "#1E293B"
-                    }
-                }
+                text: card.protectedIdentity ? "◇" : "▱"
+                color: card.protectedIdentity ? NeonTheme.muted : NeonTheme.cyan
+                font.pixelSize: 35
             }
 
-            Rectangle {
-                anchors.fill: parent
-                visible: card.window && (card.window.minimized || card.window.statusBadge === "Unavailable")
-                color: "#0F172ACC"
-
-                Column {
-                    anchors.centerIn: parent
-                    spacing: 4
-
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        textFormat: Text.PlainText
-                        text: (card.window && card.window.minimized) ? "Window Minimized" : "Preview Unavailable"
-                        color: "#94A3B8"
-                        font.pixelSize: 11
-                        font.weight: Font.Medium
-                    }
-
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        textFormat: Text.PlainText
-                        text: "Metadata preserved · no compositor texture"
-                        color: "#64748B"
-                        font.pixelSize: 9
-                    }
-                }
-            }
-
-            Rectangle {
-                anchors.top: parent.top
-                anchors.right: parent.right
-                anchors.margins: 6
-                height: 18
-                width: focusLabel.implicitWidth + 12
-                radius: 4
-                color: "#1E3A8A"
-                border.color: "#3B82F6"
-                border.width: 1
-                visible: card.window && card.window.focused
-
-                Text {
-                    id: focusLabel
-                    anchors.centerIn: parent
-                    textFormat: Text.PlainText
-                    text: "Active Focus"
-                    color: "#93C5FD"
-                    font.pixelSize: 9
-                    font.weight: Font.DemiBold
-                }
+            NeonLabel {
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                anchors.margins: 9
+                text: card.protectedIdentity ? "PROTECTED" : "APPLICATION IDENTITY"
+                font.pixelSize: 9
             }
         }
 
-        Row {
+        Flow {
             width: parent.width
-            spacing: 6
+            spacing: 5
 
-            Rectangle {
-                visible: card.window && card.window.minimized
-                height: 18
-                width: minText.implicitWidth + 10
-                radius: 4
-                color: "#1E293B"
-
-                Text {
-                    id: minText
-                    anchors.centerIn: parent
-                    textFormat: Text.PlainText
-                    text: "Minimized"
-                    color: "#94A3B8"
-                    font.pixelSize: 9
-                }
+            NeonBadge {
+                visible: !card.protectedIdentity && !!(card.window && card.window.focused)
+                tone: NeonTheme.emerald
+                label: card.demoSource ? "Sample focus" : "Focused"
             }
 
-            Rectangle {
-                visible: card.window && card.window.fullscreen
-                height: 18
-                width: fsText.implicitWidth + 10
-                radius: 4
-                color: "#1E293B"
-
-                Text {
-                    id: fsText
-                    anchors.centerIn: parent
-                    textFormat: Text.PlainText
-                    text: "Fullscreen"
-                    color: "#94A3B8"
-                    font.pixelSize: 9
-                }
+            NeonBadge {
+                visible: !card.protectedIdentity && !!(card.window && card.window.minimized)
+                tone: NeonTheme.precision
+                label: "Minimized"
             }
 
-            Text {
-                textFormat: Text.PlainText
-                text: (card.window && card.window.statusReason) ? card.window.statusReason : "Read-only observation"
-                color: "#64748B"
-                font.pixelSize: 10
+            NeonBadge {
+                visible: !card.protectedIdentity && !!(card.window && card.window.fullscreen)
+                tone: NeonTheme.precision
+                label: "Fullscreen"
+            }
+
+            NeonText {
+                visible: !card.protectedIdentity && !card.demoSource && !!(card.window && card.window.observedAt)
+                width: parent.width
+                text: "Observed " + Display.safeText(card.window ? card.window.observedAt : "")
+                color: NeonTheme.muted
+                font.pixelSize: NeonTheme.labelSize
                 elide: Text.ElideRight
-                width: parent.width - (card.window && card.window.minimized ? 65 : 0)
-                anchors.verticalCenter: parent.verticalCenter
             }
         }
-    }
-
-    MouseArea {
-        id: hoverArea
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: card.available ? Qt.PointingHandCursor : Qt.ArrowCursor
-        onClicked: if (card.available)
-            card.chosen()
-        // Window cards are read-only. A double-click selects; it never activates
-        // a native window and never changes the hierarchy level.
-        onDoubleClicked: if (card.available)
-            card.activated()
     }
 }

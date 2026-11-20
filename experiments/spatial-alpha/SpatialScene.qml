@@ -1,5 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import "theme"
+import "Presentation.js" as Display
 
 Item {
     id: scene
@@ -11,6 +13,14 @@ Item {
 
     property var backend: null
     property bool reducedMotion: false
+    property bool lowEffects: false
+    property bool highContrast: false
+    property int transitionDirection: 1
+    property int pointerSelectionDelay: 430
+    property int heldCarouselIndex: 0
+    readonly property int carouselIndex: pointerSettle.running ? heldCarouselIndex : worldIndex
+    property real carouselWheelDelta: 0
+    property var modalReturnFocus: null
     readonly property bool motionOff: scene.reducedMotion
 
     // Three navigable depth levels:
@@ -47,7 +57,7 @@ Item {
     // opacity and scale, and those honor reduced motion.
     property real cameraX: 0
     property real cameraY: 0
-    property real currentScale: scene.currentLevel === 1 ? 0.90 : (scene.currentLevel === 2 ? 1.0 : 1.08)
+    readonly property real currentScale: 1
 
     // One counted hierarchy transition per Enter, double-click, ctrl-wheel
     // step, or latched pinch. Window cycling at level C does not count.
@@ -68,11 +78,20 @@ Item {
 
     signal closed
 
-    Behavior on currentScale {
-        NumberAnimation {
-            duration: scene.motionOff ? 0 : 320
-            easing.type: Easing.OutCubic
-        }
+    // A first click updates selection immediately. Keep the card at the same
+    // coordinates until Qt's pairing interval ends so a Wayland double-click
+    // can still be delivered to the same MouseArea.
+    Timer {
+        id: pointerSettle
+        interval: scene.pointerSelectionDelay
+        repeat: false
+    }
+
+    function selectWorldFromPointer(index) {
+        if (!pointerSettle.running)
+            scene.heldCarouselIndex = scene.carouselIndex;
+        pointerSettle.restart();
+        scene.backend.selectWorld(scene.currentWorlds[index].id);
     }
 
     // Helper collections from backend
@@ -87,13 +106,13 @@ Item {
             return "DepthOS Spatial Workspace";
         let text = "DepthOS";
         if (scene.backend.currentWorld) {
-            text += "  ›  " + scene.backend.currentWorld.name;
+            text += "  ›  " + Display.safeText(scene.backend.currentWorld.name);
         }
         if (scene.currentLevel >= 2 && scene.backend.currentWorkspace) {
-            text += "  ›  " + scene.backend.currentWorkspace.name;
+            text += "  ›  " + Display.safeText(scene.backend.currentWorkspace.name);
         }
         if (scene.currentLevel >= 3 && scene.backend.currentDesktop) {
-            text += "  ›  " + scene.backend.currentDesktop.name;
+            text += "  ›  " + Display.safeText(scene.backend.currentDesktop.name);
         }
         return text;
     }
@@ -139,17 +158,27 @@ Item {
         }
     }
 
+    onCurrentWorldsChanged: syncIndices()
+    onCurrentWorkspacesChanged: syncIndices()
+    onCurrentDesktopsChanged: syncIndices()
+    onCurrentWindowsChanged: syncIndices()
+
     function onboardingOpen() {
         return !!(scene.backend && scene.backend.onboardingState && scene.backend.onboardingState !== "hidden");
     }
 
     function navigationBlocked() {
-        return searchPalette.isOpen || scene.onboardingOpen();
+        return searchPalette.isOpen || controlCenter.isOpen || scene.onboardingOpen();
     }
 
     function setLevel(next) {
         if (next === scene.currentLevel)
             return false;
+        if (next < 1 || next > 3)
+            return false;
+        scene.transitionDirection = next > scene.currentLevel ? 1 : -1;
+        pointerSettle.stop();
+        scene.carouselWheelDelta = 0;
         scene.currentLevel = next;
         scene.cameraX = 0;
         scene.cameraY = 0;
@@ -163,14 +192,16 @@ Item {
         scene.lastPointerDrillMs = -1e15;
         scene.pinchActive = false;
         scene.pinchLatched = false;
+        pointerSettle.stop();
+        scene.carouselWheelDelta = 0;
     }
 
     function activeColumn() {
         if (scene.currentLevel === 2)
-            return levelBColumn;
+            return levelBView.panContent;
         if (scene.currentLevel === 3)
-            return levelCColumn;
-        return levelAColumn;
+            return levelCView.panContent;
+        return null;
     }
 
     function panLimitFor(length, viewport) {
@@ -186,7 +217,9 @@ Item {
 
     function panLimitY() {
         const item = scene.activeColumn();
-        return item ? scene.panLimitFor(item.height, canvasViewport.height) : 0;
+        if (!item || item.height + 56 <= canvasViewport.height)
+            return 0;
+        return item.height + 56 - canvasViewport.height;
     }
 
     function clampPan(value, limit) {
@@ -220,6 +253,18 @@ Item {
         if (mod & Qt.ShiftModifier) {
             dx += dy;
             dy = 0;
+        }
+        if (scene.currentLevel === 1) {
+            const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+            if (scene.carouselWheelDelta * delta < 0)
+                scene.carouselWheelDelta = 0;
+            scene.carouselWheelDelta += delta;
+            if (Math.abs(scene.carouselWheelDelta) >= scene.wheelStepPx * 0.7) {
+                const direction = scene.carouselWheelDelta > 0 ? -1 : 1;
+                scene.carouselWheelDelta = 0;
+                scene.moveHorizontal(direction);
+            }
+            return;
         }
         scene.panBy(dx, dy);
     }
@@ -255,8 +300,10 @@ Item {
             return;
         if (scale >= 1.25) {
             scene.pinchLatched = true;
-            scene.focusCardAt(scene.pinchX, scene.pinchY);
-            scene.drillDown(false);
+            if (scene.currentLevel < 3) {
+                scene.focusCardAt(scene.pinchX, scene.pinchY);
+                scene.drillDown(false);
+            }
         } else if (scale <= 0.75) {
             scene.pinchLatched = true;
             scene.focusCardAt(scene.pinchX, scene.pinchY);
@@ -304,14 +351,22 @@ Item {
             prefix = "workspaceCard-";
             list = scene.currentWorkspaces;
         }
+        let targetIndex = -1;
+        let targetZ = -Infinity;
         for (let i = 0; i < list.length; ++i) {
             const card = scene.findNamed(prefix + list[i].id);
-            if (!card || card.available === false)
+            if (!card || !card.visible || card.available === false || card.z < targetZ)
                 continue;
             const p = card.mapFromItem(scene, x, y);
             if (p.x < 0 || p.y < 0 || p.x > card.width || p.y > card.height)
                 continue;
+            targetIndex = i;
+            targetZ = card.z;
+        }
+        const i = targetIndex;
+        if (i >= 0) {
             if (scene.currentLevel === 1) {
+                pointerSettle.stop();
                 scene.worldIndex = i;
                 scene.backend.selectWorld(list[i].id);
             } else if (scene.currentLevel === 2) {
@@ -338,6 +393,8 @@ Item {
     }
 
     function revealFocusedCard() {
+        if (scene.currentLevel === 1)
+            return;
         const card = scene.focusedCard();
         if (!card || card.width <= 0)
             return;
@@ -386,7 +443,12 @@ Item {
                 searchPalette.focusInput();
             return;
         }
-        if (scene.isTextEntry(item))
+        if (controlCenter.isOpen) {
+            if (!scene.itemInside(item, controlCenter))
+                controlCenter.forceActiveFocus();
+            return;
+        }
+        if (scene.isTextEntry(item) || (scene.itemInside(item, topBar) && item.enabled))
             return;
         if (!scene.activeFocus)
             scene.forceActiveFocus();
@@ -415,6 +477,7 @@ Item {
             return;
 
         if (scene.currentLevel === 1) {
+            pointerSettle.stop();
             // Level A: Worlds
             if (scene.currentWorlds.length > 0) {
                 scene.worldIndex = Math.max(0, Math.min(scene.currentWorlds.length - 1, scene.worldIndex + delta));
@@ -443,15 +506,22 @@ Item {
         if (scene.currentLevel === 1) {
             scene.moveHorizontal(delta * 2);
         } else if (scene.currentLevel === 2) {
-            const cols = Math.min(3, Math.max(1, scene.currentWorkspaces.length));
-            scene.moveHorizontal(delta * cols);
+            scene.moveHorizontal(delta * levelBView.columns);
         } else if (scene.currentLevel === 3) {
             // In Level C, vertical moves between logical desktops
             if (scene.currentDesktops.length > 0) {
-                scene.desktopIndex = Math.max(0, Math.min(scene.currentDesktops.length - 1, scene.desktopIndex + delta));
-                scene.backend.selectDesktop(scene.currentDesktops[scene.desktopIndex].id);
+                scene.selectDesktopIndex(scene.desktopIndex + delta);
             }
         }
+    }
+
+    function selectDesktopIndex(index) {
+        if (scene.navigationBlocked() || scene.currentDesktops.length === 0)
+            return;
+        scene.desktopIndex = Math.max(0, Math.min(scene.currentDesktops.length - 1, index));
+        scene.backend.selectDesktop(scene.currentDesktops[scene.desktopIndex].id);
+        scene.cameraX = 0;
+        scene.cameraY = 0;
     }
 
     property real lastPointerDrillMs: 0
@@ -462,7 +532,7 @@ Item {
 
     function pointerDrillDown() {
         const now = Date.now();
-        if (now - scene.lastPointerDrillMs < 320)
+        if (now - scene.lastPointerDrillMs < scene.levelStepCooldownMs)
             return;
         scene.lastPointerDrillMs = now;
         scene.drillDown(true);
@@ -473,7 +543,7 @@ Item {
             return;
 
         if (scene.currentLevel === 1) {
-            if (scene.currentWorlds.length === 0)
+            if (!scene.backend.currentWorld || scene.backend.currentWorld.unavailable)
                 return;
             scene.setLevel(2);
             if (scene.currentWorkspaces.length > 0) {
@@ -488,7 +558,7 @@ Item {
                 scene.workspaceIndex = 0;
             }
         } else if (scene.currentLevel === 2) {
-            if (scene.currentDesktops.length === 0)
+            if (!scene.backend.currentWorkspace || scene.backend.currentWorkspace.unavailable || scene.currentDesktops.length === 0)
                 return;
             scene.setLevel(3);
             const existingIdx = scene.currentDesktops.findIndex(d => d.id === scene.backend.selectedDesktopId);
@@ -529,11 +599,44 @@ Item {
         scene.cameraX = 0;
         scene.cameraY = 0;
         scene.syncIndices();
+        pointerSettle.stop();
+        scene.carouselWheelDelta = 0;
+    }
+
+    function rememberModalFocus() {
+        const win = scene.Window.window;
+        scene.modalReturnFocus = win ? win.activeFocusItem : scene;
+    }
+
+    function restoreModalFocus() {
+        const item = scene.modalReturnFocus;
+        scene.modalReturnFocus = null;
+        if (scene.onboardingOpen())
+            return;
+        if (item && item.visible && item.enabled && scene.itemInside(item, scene))
+            item.forceActiveFocus();
+        else
+            scene.forceActiveFocus();
+    }
+
+    function navigateBreadcrumb(level) {
+        if (scene.navigationBlocked() || level > scene.currentLevel)
+            return;
+        scene.setLevel(level);
+        scene.forceActiveFocus();
+    }
+
+    function openControlCenter() {
+        if (scene.navigationBlocked())
+            return;
+        scene.rememberModalFocus();
+        controlCenter.isOpen = true;
     }
 
     function openSearch() {
-        if (scene.onboardingOpen())
+        if (scene.navigationBlocked())
             return;
+        scene.rememberModalFocus();
         searchPalette.isOpen = true;
     }
 
@@ -565,6 +668,9 @@ Item {
         } else if (event.key === Qt.Key_Slash) {
             scene.openSearch();
             event.accepted = true;
+        } else if (event.key === Qt.Key_F2) {
+            scene.openControlCenter();
+            event.accepted = true;
         } else if (event.key === Qt.Key_Home) {
             scene.returnHome();
             event.accepted = true;
@@ -576,609 +682,133 @@ Item {
             event.accepted = true;
         } else if (event.key === Qt.Key_BracketLeft) {
             if (scene.currentDesktops.length > 0) {
-                scene.desktopIndex = Math.max(0, scene.desktopIndex - 1);
-                scene.backend.selectDesktop(scene.currentDesktops[scene.desktopIndex].id);
+                scene.selectDesktopIndex(scene.desktopIndex - 1);
             }
             event.accepted = true;
         } else if (event.key === Qt.Key_BracketRight) {
             if (scene.currentDesktops.length > 0) {
-                scene.desktopIndex = Math.min(scene.currentDesktops.length - 1, scene.desktopIndex + 1);
-                scene.backend.selectDesktop(scene.currentDesktops[scene.desktopIndex].id);
+                scene.selectDesktopIndex(scene.desktopIndex + 1);
             }
             event.accepted = true;
         }
     }
 
-    Rectangle {
+    SceneAtmosphere {
         anchors.fill: parent
-        color: "#080C14"
-
-        Item {
-            anchors.fill: parent
-            x: scene.cameraX * 0.15
-            y: scene.cameraY * 0.15
-
-            Repeater {
-                model: Math.ceil(scene.width / 120) + 2
-                delegate: Rectangle {
-                    required property int index
-                    x: (index - 1) * 120
-                    y: 0
-                    width: 1
-                    height: scene.height
-                    color: "#1E293B18"
-                }
-            }
-
-            Repeater {
-                model: Math.ceil(scene.height / 120) + 2
-                delegate: Rectangle {
-                    required property int index
-                    x: 0
-                    y: (index - 1) * 120
-                    width: scene.width
-                    height: 1
-                    color: "#1E293B18"
-                }
+        lowEffects: scene.lowEffects
+        highContrast: scene.highContrast
+        level: scene.currentLevel
+        drift: scene.motionOff ? 0 : scene.cameraX * 0.13 - scene.carouselIndex * 12
+        Behavior on drift {
+            NumberAnimation {
+                duration: NeonTheme.ms(scene.motionOff, NeonTheme.slideMs)
+                easing.type: NeonTheme.easing
             }
         }
     }
 
-    Rectangle {
+    TelemetryHeader {
         id: topBar
-        x: 0
-        y: 0
         width: parent.width
-        height: 60
-        color: "#0B1020EE"
-        border.color: "#1E293B"
-        border.width: 1
+        scene: scene
+        enabled: !scene.navigationBlocked()
         z: 10
-
-        Row {
-            anchors.left: parent.left
-            anchors.leftMargin: 24
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 12
-
-            Text {
-                textFormat: Text.PlainText
-                text: "DEPTHOS"
-                color: "#818CF8"
-                font.pixelSize: 15
-                font.weight: Font.Black
-                anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Rectangle {
-                width: 1
-                height: 18
-                color: "#334155"
-                anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Text {
-                textFormat: Text.PlainText
-                text: scene.breadcrumbText
-                color: "#E2E8F0"
-                font.pixelSize: 13
-                font.weight: Font.Medium
-                anchors.verticalCenter: parent.verticalCenter
-            }
-        }
-
-        Row {
-            anchors.right: parent.right
-            anchors.rightMargin: 24
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 12
-
-            Rectangle {
-                height: 26
-                width: levelLabel.implicitWidth + 16
-                radius: 13
-                color: "#1E293B"
-                border.color: "#38BDF8"
-                border.width: 1
-
-                Text {
-                    id: levelLabel
-                    anchors.centerIn: parent
-                    textFormat: Text.PlainText
-                    text: scene.currentLevelName
-                    color: "#38BDF8"
-                    font.pixelSize: 11
-                    font.weight: Font.DemiBold
-                }
-            }
-
-            Rectangle {
-                height: 26
-                width: searchBtnText.implicitWidth + 18
-                radius: 13
-                color: "#1E293B"
-                border.color: "#475569"
-                border.width: 1
-
-                Row {
-                    anchors.centerIn: parent
-                    spacing: 5
-                    Text {
-                        text: "🔍"
-                        font.pixelSize: 11
-                    }
-                    Text {
-                        id: searchBtnText
-                        textFormat: Text.PlainText
-                        text: "Search (/)"
-                        color: "#CBD5E1"
-                        font.pixelSize: 11
-                    }
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: scene.openSearch()
-                }
-            }
-
-            Column {
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 0
-
-                Text {
-                    objectName: "sourceLabel"
-                    textFormat: Text.PlainText
-                    text: scene.backend ? scene.backend.sourceLabel : "No Source"
-                    color: scene.backend && scene.backend.isDemo ? "#C4B5FD" : "#E2E8F0"
-                    font.pixelSize: 11
-                    font.weight: Font.DemiBold
-                }
-
-                Text {
-                    objectName: "observerLabel"
-                    textFormat: Text.PlainText
-                    text: scene.backend ? scene.backend.observerLabel : "Native Observer Unavailable"
-                    color: scene.backend && scene.backend.observerLive ? "#22C55E" : "#94A3B8"
-                    font.pixelSize: 10
-                }
-            }
-
-            StatusBadge {
-                anchors.verticalCenter: parent.verticalCenter
-                status: scene.backend ? scene.backend.observationHealth : "Unavailable"
-                detail: scene.backend ? (scene.backend.observerDetail || scene.backend.state) : "Offline"
-            }
-        }
     }
 
     Item {
         id: canvasViewport
         objectName: "canvasViewport"
         anchors.fill: parent
-        anchors.topMargin: 70
-        anchors.bottomMargin: 50
+        anchors.topMargin: NeonTheme.hudHeight
+        anchors.bottomMargin: NeonTheme.footerHeight
+        enabled: !scene.navigationBlocked()
         clip: true
 
-        Item {
-            id: canvasContainer
+        WorldsView {
+            id: levelAView
+            objectName: "worldsView"
             anchors.fill: parent
-            transform: [
-                Scale {
-                    origin.x: canvasContainer.width / 2
-                    origin.y: canvasContainer.height / 2
-                    xScale: scene.currentScale
-                    yScale: scene.currentScale
-                },
-                Translate {
-                    x: scene.cameraX
-                    y: scene.cameraY
-                }
-            ]
+            scene: scene
+            activeLevel: scene.currentLevel === 1
+            motionOff: scene.motionOff
+            direction: scene.transitionDirection
+            z: activeLevel ? 1 : 0
+        }
 
-            Item {
-                id: levelAView
-                anchors.fill: parent
-                visible: scene.currentLevel === 1
-                opacity: scene.currentLevel === 1 ? 1 : 0
-                Behavior on opacity {
-                    NumberAnimation {
-                        duration: scene.motionOff ? 0 : 220
-                        easing.type: Easing.OutCubic
-                    }
-                }
+        WorkspacesView {
+            id: levelBView
+            objectName: "workspacesView"
+            anchors.fill: parent
+            scene: scene
+            activeLevel: scene.currentLevel === 2
+            motionOff: scene.motionOff
+            direction: scene.transitionDirection
+            z: activeLevel ? 1 : 0
+        }
 
-                Column {
-                    id: levelAColumn
-                    anchors.centerIn: parent
-                    spacing: 24
-
-                    Text {
-                        textFormat: Text.PlainText
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "World Overview — Spatial Topography"
-                        color: "#F8FAFC"
-                        font.pixelSize: 22
-                        font.weight: Font.DemiBold
-                    }
-
-                    Grid {
-                        id: worldsGrid
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        columns: 2
-                        spacing: 24
-
-                        Repeater {
-                            model: scene.currentWorlds
-                            delegate: WorldCard {
-                                id: worldDelegate
-                                required property var modelData
-                                required property int index
-                                objectName: "worldCard-" + worldDelegate.modelData.id
-
-                                world: worldDelegate.modelData
-                                workspaces: scene.backend ? scene.backend.getWorkspacesForWorld(worldDelegate.modelData.id) : []
-                                isSelected: scene.backend && scene.backend.selectedWorldId === worldDelegate.modelData.id
-                                isFocused: scene.worldIndex === worldDelegate.index && scene.currentLevel === 1
-                                motionOff: scene.motionOff
-
-                                onChosen: {
-                                    if (!worldDelegate.available)
-                                        return;
-                                    scene.worldIndex = worldDelegate.index;
-                                    scene.backend.selectWorld(worldDelegate.modelData.id);
-                                }
-                                onActivated: {
-                                    if (!worldDelegate.available)
-                                        return;
-                                    scene.worldIndex = worldDelegate.index;
-                                    scene.backend.selectWorld(worldDelegate.modelData.id);
-                                    scene.pointerDrillDown();
-                                }
-                            }
-                        }
-                    }
-
-                    Text {
-                        objectName: "emptyHierarchyHint"
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        visible: scene.currentWorlds.length === 0
-                        textFormat: Text.PlainText
-                        text: "No worlds in this workspace yet."
-                        color: "#94A3B8"
-                        font.pixelSize: 15
-                    }
-                }
-            }
-
-            Item {
-                id: levelBView
-                anchors.fill: parent
-                visible: scene.currentLevel === 2
-                opacity: scene.currentLevel === 2 ? 1 : 0
-                Behavior on opacity {
-                    NumberAnimation {
-                        duration: scene.motionOff ? 0 : 220
-                        easing.type: Easing.OutCubic
-                    }
-                }
-
-                Column {
-                    id: levelBColumn
-                    anchors.centerIn: parent
-                    spacing: 20
-
-                    Row {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        spacing: 12
-
-                        Text {
-                            textFormat: Text.PlainText
-                            text: (scene.backend && scene.backend.currentWorld) ? scene.backend.currentWorld.icon : "🌐"
-                            font.pixelSize: 24
-                        }
-
-                        Text {
-                            textFormat: Text.PlainText
-                            text: ((scene.backend && scene.backend.currentWorld) ? scene.backend.currentWorld.name : "World") + " — Workspaces"
-                            color: "#F8FAFC"
-                            font.pixelSize: 22
-                            font.weight: Font.DemiBold
-                        }
-
-                        Rectangle {
-                            anchors.verticalCenter: parent.verticalCenter
-                            height: 22
-                            width: returnWorldHint.implicitWidth + 12
-                            radius: 4
-                            color: "#1E293B"
-                            border.color: "#334155"
-                            border.width: 1
-
-                            Text {
-                                id: returnWorldHint
-                                anchors.centerIn: parent
-                                textFormat: Text.PlainText
-                                text: "Esc: Return to Worlds"
-                                color: "#94A3B8"
-                                font.pixelSize: 10
-                            }
-                        }
-                    }
-
-                    Grid {
-                        id: workspacesGrid
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        columns: Math.min(3, Math.max(1, scene.currentWorkspaces.length))
-                        spacing: 20
-
-                        Repeater {
-                            model: scene.currentWorkspaces
-                            delegate: WorkspaceCard {
-                                id: wsDelegate
-                                required property var modelData
-                                required property int index
-                                objectName: "workspaceCard-" + wsDelegate.modelData.id
-
-                                workspace: wsDelegate.modelData
-                                desktops: scene.backend ? scene.backend.getDesktopsForWorkspace(wsDelegate.modelData.id) : []
-                                observedWindowCount: {
-                                    if (!scene.backend)
-                                        return 0;
-                                    const ds = scene.backend.getDesktopsForWorkspace(wsDelegate.modelData.id);
-                                    let count = 0;
-                                    for (let i = 0; i < ds.length; ++i) {
-                                        count += scene.backend.getWindowsForDesktop(ds[i].id).length;
-                                    }
-                                    return count;
-                                }
-                                statusBadge: scene.workspaceSourceBadge()
-                                isSelected: scene.backend && scene.backend.selectedWorkspaceId === wsDelegate.modelData.id
-                                isFocused: scene.workspaceIndex === wsDelegate.index && scene.currentLevel === 2
-                                motionOff: scene.motionOff
-
-                                onChosen: {
-                                    if (!wsDelegate.available)
-                                        return;
-                                    scene.workspaceIndex = wsDelegate.index;
-                                    scene.backend.selectWorkspace(wsDelegate.modelData.id);
-                                }
-                                onActivated: {
-                                    if (!wsDelegate.available)
-                                        return;
-                                    scene.workspaceIndex = wsDelegate.index;
-                                    scene.backend.selectWorkspace(wsDelegate.modelData.id);
-                                    scene.pointerDrillDown();
-                                }
-                            }
-                        }
-                    }
-
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        visible: scene.currentWorkspaces.length === 0
-                        textFormat: Text.PlainText
-                        text: "No workspaces created in this world yet."
-                        color: "#94A3B8"
-                        font.pixelSize: 15
-                    }
-                }
-            }
-
-            Item {
-                id: levelCView
-                anchors.fill: parent
-                visible: scene.currentLevel === 3
-                opacity: scene.currentLevel === 3 ? 1 : 0
-                Behavior on opacity {
-                    NumberAnimation {
-                        duration: scene.motionOff ? 0 : 220
-                        easing.type: Easing.OutCubic
-                    }
-                }
-
-                Column {
-                    id: levelCColumn
-                    anchors.centerIn: parent
-                    width: parent.width - 64
-                    spacing: 16
-
-                    Row {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        spacing: 10
-
-                        Repeater {
-                            model: scene.currentDesktops
-                            delegate: Rectangle {
-                                id: deskTabDelegate
-                                required property var modelData
-                                required property int index
-
-                                height: 36
-                                width: Math.max(120, tabLabel.implicitWidth + 32)
-                                radius: 8
-                                color: (scene.backend && scene.backend.selectedDesktopId === deskTabDelegate.modelData.id) ? "#312E81" : "#1E293B"
-                                border.width: (scene.backend && scene.backend.selectedDesktopId === deskTabDelegate.modelData.id) ? 2 : 1
-                                border.color: (scene.backend && scene.backend.selectedDesktopId === deskTabDelegate.modelData.id) ? "#818CF8" : "#334155"
-
-                                Row {
-                                    anchors.centerIn: parent
-                                    spacing: 8
-
-                                    Text {
-                                        id: tabLabel
-                                        textFormat: Text.PlainText
-                                        text: deskTabDelegate.modelData.name
-                                        color: (scene.backend && scene.backend.selectedDesktopId === deskTabDelegate.modelData.id) ? "#F8FAFC" : "#94A3B8"
-                                        font.pixelSize: 12
-                                        font.weight: Font.Medium
-                                    }
-
-                                    Rectangle {
-                                        height: 16
-                                        width: winCountLabel.implicitWidth + 8
-                                        radius: 8
-                                        color: "#0F172A"
-
-                                        Text {
-                                            id: winCountLabel
-                                            anchors.centerIn: parent
-                                            textFormat: Text.PlainText
-                                            text: scene.backend ? String(scene.backend.getWindowsForDesktop(deskTabDelegate.modelData.id).length) : "0"
-                                            color: "#A5B4FC"
-                                            font.pixelSize: 9
-                                        }
-                                    }
-                                }
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        scene.desktopIndex = deskTabDelegate.index;
-                                        scene.backend.selectDesktop(deskTabDelegate.modelData.id);
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            anchors.verticalCenter: parent.verticalCenter
-                            height: 26
-                            width: escWsHint.implicitWidth + 12
-                            radius: 4
-                            color: "#1E293B"
-                            border.color: "#334155"
-                            border.width: 1
-
-                            Text {
-                                id: escWsHint
-                                anchors.centerIn: parent
-                                textFormat: Text.PlainText
-                                text: "Esc: Return to Workspaces"
-                                color: "#94A3B8"
-                                font.pixelSize: 10
-                            }
-                        }
-                    }
-
-                    Grid {
-                        id: windowsGrid
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        columns: Math.min(3, Math.max(1, scene.currentWindows.length))
-                        spacing: 20
-
-                        Repeater {
-                            model: scene.currentWindows
-                            delegate: WindowCard {
-                                id: winDelegate
-                                required property var modelData
-                                required property int index
-                                objectName: "windowCard-" + winDelegate.modelData.id
-
-                                window: winDelegate.modelData
-                                demoSource: !!(scene.backend && (scene.backend.isDemo || scene.backend.mockMode))
-                                isSelected: scene.backend && scene.backend.selectedWindowId === winDelegate.modelData.id
-                                isFocused: scene.windowIndex === winDelegate.index && scene.currentLevel === 3
-                                showTitles: scene.showTitles
-                                motionOff: scene.motionOff
-
-                                onChosen: {
-                                    if (!winDelegate.available)
-                                        return;
-                                    scene.windowIndex = winDelegate.index;
-                                    scene.backend.selectWindow(winDelegate.modelData.id);
-                                }
-                                onActivated: {
-                                    if (!winDelegate.available)
-                                        return;
-                                    scene.windowIndex = winDelegate.index;
-                                    scene.backend.selectWindow(winDelegate.modelData.id);
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        visible: scene.currentWindows.length === 0
-                        width: 480
-                        height: 140
-                        radius: 12
-                        color: "#131C2E"
-                        border.color: "#26354D"
-                        border.width: 1
-
-                        Text {
-                            id: emptyWindowsHint
-                            objectName: "emptyWindowsHint"
-                            anchors.centerIn: parent
-                            width: parent.width - 48
-                            wrapMode: Text.WordWrap
-                            horizontalAlignment: Text.AlignHCenter
-                            textFormat: Text.PlainText
-                            text: (scene.backend && scene.backend.observerLive) ? "No native windows are associated with this logical desktop." : "Native observer unavailable. This desktop cannot list windows until a read-only observer is connected."
-                            color: "#94A3B8"
-                            font.pixelSize: 14
-                            font.weight: Font.Medium
-                        }
-                    }
-                }
-            }
+        DesktopsView {
+            id: levelCView
+            objectName: "desktopsView"
+            anchors.fill: parent
+            scene: scene
+            activeLevel: scene.currentLevel === 3
+            motionOff: scene.motionOff
+            direction: scene.transitionDirection
+            z: activeLevel ? 1 : 0
         }
     }
 
     Rectangle {
         id: bottomBar
-        x: 0
-        y: parent.height - 42
+        anchors.bottom: parent.bottom
         width: parent.width
-        height: 42
-        color: "#0B1020EE"
-        border.color: "#1E293B"
-        border.width: 1
+        height: NeonTheme.footerHeight
+        color: scene.highContrast ? NeonTheme.contrastPanel : NeonTheme.shell
         z: 10
 
-        Text {
-            id: hintText
-            anchors.left: parent.left
-            anchors.leftMargin: 24
-            anchors.right: readOnlyLabel.left
-            anchors.rightMargin: 16
-            anchors.verticalCenter: parent.verticalCenter
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            text: "H/L: Siblings · J/K: Rows · Click: select · Double-click or Enter: open · Esc: back · Wheel: pan · Ctrl+wheel: depth · /: Search · Home · T: Titles · M: Motion"
-            color: "#94A3B8"
-            font.pixelSize: 11
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: scene.highContrast ? NeonTheme.muted : NeonTheme.border
         }
 
-        Text {
+        NeonText {
+            anchors.left: parent.left
+            anchors.leftMargin: 18
+            anchors.right: demoMark.visible ? demoMark.left : readOnlyLabel.left
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            elide: Text.ElideRight
+            text: scene.currentLevel === 1
+                ? "← / →  Select   ·   ↵  Open   ·   Wheel  Browse   ·   /  Search   ·   F2  Control center"
+                : scene.currentLevel === 2
+                    ? "H J K L  Select   ·   ↵  Open   ·   Esc  Worlds   ·   Ctrl+wheel  Depth   ·   /  Search"
+                    : "↑ / ↓  Desktops   ·   ← / →  Windows   ·   Esc  Workspaces   ·   T  Titles"
+            color: NeonTheme.precision
+            font.pixelSize: NeonTheme.detailSize
+        }
+
+        NeonLabel {
+            id: demoMark
+            objectName: "demoWatermark"
+            anchors.right: readOnlyLabel.left
+            anchors.rightMargin: 18
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !!(scene.backend && scene.backend.isDemo) && scene.width >= 660
+            text: "DEMO DATA"
+            color: NeonTheme.lavender
+        }
+
+        NeonText {
             id: readOnlyLabel
             anchors.right: parent.right
-            anchors.rightMargin: 24
+            anchors.rightMargin: 18
             anchors.verticalCenter: parent.verticalCenter
-            textFormat: Text.PlainText
-            text: "Read-only · no window setters"
-            color: "#64748B"
-            font.pixelSize: 11
+            text: "Read-only"
+            color: NeonTheme.emerald
+            font.pixelSize: NeonTheme.detailSize
+            font.weight: Font.DemiBold
         }
-    }
-
-    Text {
-        objectName: "demoWatermark"
-        z: 8
-        anchors.centerIn: parent
-        rotation: -18
-        textFormat: Text.PlainText
-        text: "DEMO DATA"
-        color: "#F8FAFC"
-        opacity: 0.16
-        font.pixelSize: 92
-        font.weight: Font.Black
-        visible: !!(scene.backend && scene.backend.isDemo)
-        enabled: false
     }
 
     FocusScope {
@@ -1207,12 +837,17 @@ Item {
 
         onVisibleChanged: {
             if (visible)
-                Qt.callLater(onboardingPanel.forceActiveFocus);
+                Qt.callLater(() => {
+                    if (onboardingPanel.visible)
+                        onboardingPanel.forceActiveFocus();
+                });
+            else if (!scene.navigationBlocked())
+                scene.forceActiveFocus();
         }
 
         Rectangle {
             anchors.fill: parent
-            color: "#000000B0"
+            color: NeonTheme.scrim
             MouseArea {
                 anchors.fill: parent
             }
@@ -1223,9 +858,9 @@ Item {
             height: onboardingColumn.implicitHeight + 48
             anchors.centerIn: parent
             radius: 16
-            color: "#0F172A"
-            border.color: "#38BDF8"
-            border.width: 1.5
+            color: scene.highContrast ? NeonTheme.contrastPanel : NeonTheme.panel
+            border.color: NeonTheme.cyan
+            border.width: 1
 
             Column {
                 id: onboardingColumn
@@ -1240,7 +875,7 @@ Item {
                     textFormat: Text.PlainText
                     wrapMode: Text.WordWrap
                     text: onboardingPanel.messageText
-                    color: "#F8FAFC"
+                    color: NeonTheme.text
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
@@ -1251,7 +886,7 @@ Item {
                     textFormat: Text.PlainText
                     wrapMode: Text.WordWrap
                     text: onboardingPanel.detailText
-                    color: "#FCA5A5"
+                    color: NeonTheme.danger
                     font.pixelSize: 13
                 }
 
@@ -1259,105 +894,45 @@ Item {
                     width: parent.width
                     spacing: 10
 
-                    Rectangle {
+                    NeonButton {
                         objectName: "createWorkspaceButton"
-                        property string text: "Create my workspace"
+                        text: "Create my workspace"
                         visible: {
-                            const s = scene.backend ? scene.backend.onboardingState : "";
-                            return s === "offer" || s === "creating" || s === "error";
+                            const state = scene.backend ? scene.backend.onboardingState : "";
+                            return state === "offer" || state === "creating" || state === "error";
                         }
-                        implicitWidth: createLabel.implicitWidth + 28
-                        implicitHeight: 36
-                        radius: 8
-                        color: "#1E293B"
-                        border.color: "#38BDF8"
-                        Text {
-                            id: createLabel
-                            anchors.centerIn: parent
-                            textFormat: Text.PlainText
-                            text: parent.text
-                            color: "#E2E8F0"
-                            font.pixelSize: 13
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: scene.backend.requestCreateWorkspace()
-                        }
+                        enabled: !scene.backend || scene.backend.onboardingState !== "creating"
+                        highlighted: true
+                        onClicked: scene.backend.requestCreateWorkspace()
                     }
 
-                    Rectangle {
+                    NeonButton {
                         objectName: "continueDemoButton"
-                        property string text: "Continue in Demo Mode"
+                        text: "Continue in Demo Mode"
                         visible: {
-                            const s = scene.backend ? scene.backend.onboardingState : "";
-                            return s === "offer" || s === "error" || s === "blocked";
+                            const state = scene.backend ? scene.backend.onboardingState : "";
+                            return state === "offer" || state === "error" || state === "blocked";
                         }
-                        implicitWidth: demoLabel.implicitWidth + 28
-                        implicitHeight: 36
-                        radius: 8
-                        color: "#1E293B"
-                        border.color: "#6D28D9"
-                        Text {
-                            id: demoLabel
-                            anchors.centerIn: parent
-                            textFormat: Text.PlainText
-                            text: parent.text
-                            color: "#E2E8F0"
-                            font.pixelSize: 13
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: scene.backend.requestContinueDemo()
-                        }
+                        onClicked: scene.backend.requestContinueDemo()
                     }
 
-                    Rectangle {
+                    NeonButton {
                         objectName: "retryButton"
-                        property string text: "Try again"
+                        text: "Try again"
                         visible: {
-                            const s = scene.backend ? scene.backend.onboardingState : "";
-                            return s === "error" || s === "blocked";
+                            const state = scene.backend ? scene.backend.onboardingState : "";
+                            return state === "error" || state === "blocked";
                         }
-                        implicitWidth: retryLabel.implicitWidth + 28
-                        implicitHeight: 36
-                        radius: 8
-                        color: "#1E293B"
-                        border.color: "#475569"
-                        Text {
-                            id: retryLabel
-                            anchors.centerIn: parent
-                            textFormat: Text.PlainText
-                            text: parent.text
-                            color: "#E2E8F0"
-                            font.pixelSize: 13
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: scene.backend.requestRetry()
-                        }
+                        onClicked: scene.backend.requestRetry()
                     }
 
-                    Rectangle {
+                    NeonButton {
                         objectName: "openWorkspaceButton"
-                        property string text: "Open workspace"
-                        visible: scene.backend && scene.backend.onboardingState === "success"
-                        implicitWidth: openLabel.implicitWidth + 28
-                        implicitHeight: 36
-                        radius: 8
-                        color: "#1E293B"
-                        border.color: "#22C55E"
-                        Text {
-                            id: openLabel
-                            anchors.centerIn: parent
-                            textFormat: Text.PlainText
-                            text: parent.text
-                            color: "#E2E8F0"
-                            font.pixelSize: 13
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: scene.backend.dismissOnboarding()
-                        }
+                        text: "Open workspace"
+                        visible: !!(scene.backend && scene.backend.onboardingState === "success")
+                        highlighted: true
+                        accent: NeonTheme.emerald
+                        onClicked: scene.backend.dismissOnboarding()
                     }
                 }
             }
@@ -1371,26 +946,32 @@ Item {
         z: 100
         backend: scene.backend
         motionOff: scene.motionOff
+        highContrast: scene.highContrast
 
         onNavigate: item => {
+            if (!scene.backend || !scene.backend.navigateTo(item))
+                return;
             searchPalette.isOpen = false;
-            scene.backend.navigateTo(item);
-
-            if (item.kind === "world") {
-                scene.currentLevel = 1;
-            } else if (item.kind === "workspace") {
-                scene.currentLevel = 2;
-            } else if (item.kind === "desktop") {
-                scene.currentLevel = 3;
-            }
-            scene.syncIndices();
+            const depth = item.kind === "world" ? 1 : item.kind === "workspace" ? 2 : 3;
+            scene.setLevel(depth);
+            scene.returnHome();
+            Qt.callLater(scene.revealFocusedCard);
+            scene.modalReturnFocus = null;
             scene.forceActiveFocus();
         }
 
-        onClosed: {
-            searchPalette.isOpen = false;
-            if (!scene.onboardingOpen())
-                scene.forceActiveFocus();
+        onClosed: scene.restoreModalFocus()
+    }
+
+    ControlCenter {
+        id: controlCenter
+        objectName: "controlCenter"
+        anchors.fill: parent
+        z: 95
+        scene: scene
+        onDismissed: {
+            controlCenter.isOpen = false;
+            scene.restoreModalFocus();
         }
     }
 
@@ -1398,6 +979,8 @@ Item {
     WheelHandler {
         id: wheelHandler
         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        enabled: !searchPalette.isOpen && !controlCenter.isOpen && !scene.onboardingOpen()
+        target: null
         onWheel: event => {
             scene.handleWheel(event.angleDelta.x, event.angleDelta.y, event.pixelDelta.x, event.pixelDelta.y, event.modifiers);
         }

@@ -1,13 +1,16 @@
 import QtQuick
 import QtQuick.Window
+import "theme"
 
 Window {
     id: rootWindow
     width: 1440
     height: 900
+    minimumWidth: 490
+    minimumHeight: 470
     visible: true
     title: "DepthOS Spatial Workspace Alpha"
-    color: "#080C14"
+    color: NeonTheme.background
 
     property bool reducedMotion: false
     property alias backend: spatialBackend

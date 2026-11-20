@@ -818,7 +818,7 @@ Item {
             compare(hint.visible, true);
             verify(hint.text.toLowerCase().indexOf("observer") >= 0, "must say the observer is unavailable, not that there are no windows: " + hint.text);
             be.observerLive = true;
-            verify(hint.text.toLowerCase().indexOf("no native windows") >= 0, hint.text);
+            verify(hint.text.toLowerCase().indexOf("window associations are unavailable") >= 0, hint.text);
         }
     }
 }

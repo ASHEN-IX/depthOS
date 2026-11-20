@@ -1,5 +1,6 @@
 import QtQuick
 import "MockData.js" as MockData
+import "Presentation.js" as Display
 
 Item {
     id: backend
@@ -20,6 +21,8 @@ Item {
     // the separate, independent observerLive flag.
     property string sourceKind: "none"
     property string sourceDetail: ""
+    property string sourceLoadedAt: ""
+    readonly property string controllerStatus: state === "Connecting" || state === "Connected" ? state : "Unavailable"
     property bool observerLive: false
     property string observerDetail: ""
     readonly property bool isDemo: sourceKind === "demo"
@@ -30,7 +33,7 @@ Item {
         case "sqlite":
             return "Local SQLite";
         case "controller":
-            return "Connected Controller";
+            return state === "Unavailable" ? "Last controller snapshot" : "Connected Controller";
         default:
             return "No Source";
         }
@@ -134,11 +137,10 @@ Item {
     }
 
     function selectDesktop(desktopId) {
-        selectedDesktopId = desktopId;
         const d = desktops.find(item => item.id === desktopId);
-        if (d && d.workspaceId !== selectedWorkspaceId) {
+        if (d && d.workspaceId !== selectedWorkspaceId)
             selectWorkspace(d.workspaceId);
-        }
+        selectedDesktopId = desktopId;
         const subWindows = getWindowsForDesktop(desktopId);
         if (subWindows.length > 0) {
             if (!subWindows.some(w => w.id === selectedWindowId)) {
@@ -150,92 +152,97 @@ Item {
     }
 
     function selectWindow(windowId) {
-        selectedWindowId = windowId;
         const w = windows.find(item => item.id === windowId);
-        if (w && w.desktopId !== selectedDesktopId) {
+        if (w && w.desktopId !== selectedDesktopId)
             selectDesktop(w.desktopId);
-        }
+        selectedWindowId = windowId;
     }
 
-    // Lightweight deterministic local search across Worlds, Workspaces, and Desktops
+    // Bind the local index to hierarchy revisions, never to window metadata.
+    // Parent maps avoid repeatedly walking the hierarchy on each keystroke.
+    readonly property var searchIndex: {
+        const worldNames = new Map();
+        const workspacePaths = new Map();
+        const indexed = [];
+
+        for (const world of worlds) {
+            const name = Display.safeText(world.name);
+            worldNames.set(world.id, name);
+            if (!world.unavailable)
+                indexed.push({
+                    kind: "world", id: world.id, name: name,
+                    detail: "World · " + Display.safeText(world.description),
+                    breadcrumb: "Worlds",
+                    worldId: world.id, workspaceId: "", desktopId: "",
+                    terms: [name, Display.safeText(world.description)]
+                });
+        }
+        for (const workspace of workspaces) {
+            const name = Display.safeText(workspace.name);
+            const parent = worldNames.get(workspace.worldId);
+            if (!parent)
+                continue;
+            workspacePaths.set(workspace.id, { name: name, world: parent, worldId: workspace.worldId });
+            if (!workspace.unavailable)
+                indexed.push({
+                    kind: "workspace", id: workspace.id, name: name,
+                    detail: "Workspace in " + parent,
+                    breadcrumb: parent,
+                    worldId: workspace.worldId, workspaceId: workspace.id, desktopId: "",
+                    terms: [name, Display.safeText(workspace.description), Display.safeText(workspace.rootDirectory), parent]
+                });
+        }
+        for (const desktop of desktops) {
+            const path = workspacePaths.get(desktop.workspaceId);
+            if (!path || desktop.unavailable)
+                continue;
+            const name = Display.safeText(desktop.name);
+            indexed.push({
+                kind: "desktop", id: desktop.id, name: name,
+                detail: "Logical Desktop in " + path.name,
+                breadcrumb: path.world + " › " + path.name,
+                worldId: path.worldId, workspaceId: desktop.workspaceId, desktopId: desktop.id,
+                terms: [name, Display.safeText(desktop.role), path.name, path.world]
+            });
+        }
+        return indexed.map(item => Object.assign(item, { terms: item.terms.map(term => term.toLowerCase()) }));
+    }
+
     function search(query) {
-        if (!query || query.trim() === "")
+        let q = Display.safeText(query).toLowerCase();
+        if (!q)
             return [];
-        const q = query.trim().toLowerCase();
+        const kind = ({ "@": "world", "#": "workspace", "!": "desktop" })[q[0]];
+        if (kind)
+            q = q.slice(1).trim();
         const results = [];
-
-        // 1. Search Worlds
-        for (let i = 0; i < worlds.length; ++i) {
-            const w = worlds[i];
-            if (w.name.toLowerCase().includes(q) || (w.description && w.description.toLowerCase().includes(q))) {
-                results.push({
-                    kind: "world",
-                    id: w.id,
-                    name: w.name,
-                    detail: "World · " + (w.description || "Workspace group"),
-                    worldId: w.id,
-                    workspaceId: "",
-                    desktopId: ""
-                });
+        for (const item of searchIndex) {
+            if ((!kind || item.kind === kind) && item.terms.some(term => term.includes(q))) {
+                results.push(item);
+                if (results.length === 150)
+                    break;
             }
         }
-
-        // 2. Search Workspaces
-        for (let i = 0; i < workspaces.length; ++i) {
-            const ws = workspaces[i];
-            const parentWorld = worlds.find(w => w.id === ws.worldId);
-            const parentName = parentWorld ? parentWorld.name : "World";
-            if (ws.name.toLowerCase().includes(q) || (ws.description && ws.description.toLowerCase().includes(q)) || (ws.rootDirectory && ws.rootDirectory.toLowerCase().includes(q)) || parentName.toLowerCase().includes(q)) {
-                results.push({
-                    kind: "workspace",
-                    id: ws.id,
-                    name: ws.name,
-                    detail: "Workspace in " + parentName + (ws.description ? " · " + ws.description : ""),
-                    worldId: ws.worldId,
-                    workspaceId: ws.id,
-                    desktopId: ""
-                });
-            }
-        }
-
-        // 3. Search Desktops
-        for (let i = 0; i < desktops.length; ++i) {
-            const d = desktops[i];
-            const parentWs = workspaces.find(ws => ws.id === d.workspaceId);
-            const wsName = parentWs ? parentWs.name : "Workspace";
-            const worldId = parentWs ? parentWs.worldId : "";
-            if (d.name.toLowerCase().includes(q) || (d.role && d.role.toLowerCase().includes(q)) || wsName.toLowerCase().includes(q)) {
-                results.push({
-                    kind: "desktop",
-                    id: d.id,
-                    name: d.name,
-                    detail: "Logical Desktop in " + wsName + (d.role ? " (" + d.role + ")" : ""),
-                    worldId: worldId,
-                    workspaceId: d.workspaceId,
-                    desktopId: d.id
-                });
-            }
-        }
-
         return results;
     }
 
-    // Direct context navigation
+    // Resolve IDs against the current hierarchy before applying a result.
     function navigateTo(target) {
         if (!target)
-            return;
-        if (target.worldId) {
-            selectedWorldId = target.worldId;
+            return false;
+        if (target.kind === "world" && worlds.some(w => w.id === target.id && !w.unavailable)) {
+            selectWorld(target.id);
+            return true;
         }
-        if (target.workspaceId) {
-            selectedWorkspaceId = target.workspaceId;
+        if (target.kind === "workspace" && workspaces.some(w => w.id === target.id && !w.unavailable)) {
+            selectWorkspace(target.id);
+            return true;
         }
-        if (target.desktopId) {
-            selectedDesktopId = target.desktopId;
+        if (target.kind === "desktop" && desktops.some(d => d.id === target.id && !d.unavailable)) {
+            selectDesktop(target.id);
+            return true;
         }
-        if (target.windowId) {
-            selectedWindowId = target.windowId;
-        }
+        return false;
     }
 
     function loadMock() {
@@ -246,6 +253,7 @@ Item {
         windows = mock.windows;
         mockMode = true;
         sourceKind = "demo";
+        sourceLoadedAt = "";
         sourceDetail = "Built-in sample data, not your workspace";
         observerLive = false;
         observerDetail = "Demo data is simulated; nothing is observed from KWin";

@@ -222,7 +222,7 @@ fn init_creates_private_default_hierarchy_atomically() {
 
     let after = status(at, None);
     assert_eq!(after["state"], "valid");
-    assert_eq!(after["schemaVersion"], 2);
+    assert_eq!(after["schemaVersion"], 3);
     assert_eq!(counts(&after), (1, 1, 1));
     assert!(!at.join("empty-home").exists());
 }

@@ -77,7 +77,7 @@ fn version_one_reader_observes_atomic_upgrade_and_rule_cascade() {
     }
     let (tree, rules) = reader.association_view().unwrap();
     assert_eq!(tree, tree_before);
-    assert_eq!(reader.doctor().unwrap().schema_version, 2);
+    assert_eq!(reader.doctor().unwrap().schema_version, 3);
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].desktop, Some(desktop));
     old.apply(Change::DeleteDesktop(desktop)).unwrap();

@@ -7,6 +7,10 @@
 !/artifacts/phase-4-4/
 /artifacts/phase-4-4/*
 !/artifacts/phase-4-4/*.png
+!/artifacts/phase-4-5/
+/artifacts/phase-4-5/*
+!/artifacts/phase-4-5/*.json
+!/artifacts/phase-4-5/*.png
 __pycache__/
 
 /target/

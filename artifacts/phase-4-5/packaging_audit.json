@@ -1,0 +1,37 @@
+{
+  "timestamp": 1795269781.5137532,
+  "verdict": "PASS",
+  "audit": {
+    "desktopEntry": {
+      "status": "PASS",
+      "desktopFileValidate": "PASS",
+      "entryFile": "/home/ashenix/Projects/DepthOS-phase-4-5/pkg/depthos.desktop"
+    },
+    "applicationIcon": {
+      "status": "PASS",
+      "iconFile": "/home/ashenix/Projects/DepthOS-phase-4-5/pkg/depthos.svg",
+      "viewBox": "0 0 512 512",
+      "dimensions": "512x512"
+    },
+    "securityAudit": {
+      "status": "PASS",
+      "setuidSetgidProhibited": true,
+      "worldWritableProhibited": true,
+      "filesAudited": 5
+    },
+    "installationTest": {
+      "status": "PASS",
+      "prefix": "/tmp/depthos-pkg-test-k5wtf_gz",
+      "installedBinaries": [
+        "depthos",
+        "depthos-spatial-alpha"
+      ],
+      "desktopIntegration": true,
+      "qmlModulesInstalled": true
+    },
+    "offlineFallback": {
+      "status": "PASS",
+      "cleanHelpExit": true
+    }
+  }
+}

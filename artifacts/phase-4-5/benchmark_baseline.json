@@ -1,0 +1,212 @@
+{
+  "timestamp": 1795267277.313314,
+  "gitCommit": "3f3710b821128e56e727fedf0e4e8875eeb2796a",
+  "toolchain": {
+    "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09) (Arch Linux rust 1:1.100.0-1)",
+    "python": "3.14.10",
+    "kernel": "7.3.4-1-garuda",
+    "kwin": "kwin 6.8.3"
+  },
+  "scenarios": {
+    "small": {
+      "fixture": {
+        "scenario": "small",
+        "path": "/tmp/depthos-matrix-twf0gpva/small.sqlite",
+        "worlds": 4,
+        "workspaces": 12,
+        "desktops": 36,
+        "generationTimeSeconds": 0.0024,
+        "fileSizeBytes": 106496
+      },
+      "sqliteQueries": {
+        "treeQueryLatencyMs": {
+          "median": 4.22,
+          "min": 3.29,
+          "max": 4.3
+        },
+        "catalogCounts": {
+          "worlds": 4,
+          "workspaces": 12,
+          "desktops": 36
+        },
+        "workspaceListLatencyMs": 3.03
+      },
+      "managementOperations": {
+        "createWorldMs": 2.54,
+        "createWorkspaceMs": 3.47,
+        "createDesktopMs": 3.35,
+        "reorderDesktopsMs": 3.37,
+        "archiveDesktopMs": 2.77,
+        "restoreDesktopMs": 3.45,
+        "inspectProjectMs": 3.08
+      },
+      "uiLifecycle": {
+        "wallRunMs": 1439.7,
+        "memory": {
+          "rssKiB": 131100,
+          "pssKiB": 77156,
+          "privateDirtyKiB": 62256,
+          "vmHwmKiB": 131100
+        },
+        "frames": {
+          "totalSwaps": 17,
+          "medianIntervalMs": 15.92,
+          "p95IntervalMs": 20.65,
+          "maxIntervalMs": 20.65,
+          "medianRenderMs": 7.99,
+          "p95RenderMs": 9.21
+        }
+      }
+    },
+    "medium": {
+      "fixture": {
+        "scenario": "medium",
+        "path": "/tmp/depthos-matrix-twf0gpva/medium.sqlite",
+        "worlds": 20,
+        "workspaces": 100,
+        "desktops": 300,
+        "generationTimeSeconds": 0.0029,
+        "fileSizeBytes": 233472
+      },
+      "sqliteQueries": {
+        "treeQueryLatencyMs": {
+          "median": 9.28,
+          "min": 8.87,
+          "max": 10.47
+        },
+        "catalogCounts": {
+          "worlds": 20,
+          "workspaces": 100,
+          "desktops": 300
+        },
+        "workspaceListLatencyMs": 3.32
+      },
+      "managementOperations": {
+        "createWorldMs": 3.55,
+        "createWorkspaceMs": 3.36,
+        "createDesktopMs": 3.41,
+        "reorderDesktopsMs": 3.32,
+        "archiveDesktopMs": 2.68,
+        "restoreDesktopMs": 3.6,
+        "inspectProjectMs": 3.12
+      },
+      "uiLifecycle": {
+        "wallRunMs": 1431.13,
+        "memory": {
+          "rssKiB": 133776,
+          "pssKiB": 79870,
+          "privateDirtyKiB": 64676,
+          "vmHwmKiB": 133776
+        },
+        "frames": {
+          "totalSwaps": 17,
+          "medianIntervalMs": 16.03,
+          "p95IntervalMs": 20.82,
+          "maxIntervalMs": 20.82,
+          "medianRenderMs": 8.12,
+          "p95RenderMs": 9.46
+        }
+      }
+    },
+    "large": {
+      "fixture": {
+        "scenario": "large",
+        "path": "/tmp/depthos-matrix-twf0gpva/large.sqlite",
+        "worlds": 100,
+        "workspaces": 500,
+        "desktops": 1500,
+        "generationTimeSeconds": 0.0172,
+        "fileSizeBytes": 729088
+      },
+      "sqliteQueries": {
+        "treeQueryLatencyMs": {
+          "median": 33.28,
+          "min": 31.85,
+          "max": 36.04
+        },
+        "catalogCounts": {
+          "worlds": 100,
+          "workspaces": 500,
+          "desktops": 1500
+        },
+        "workspaceListLatencyMs": 3.03
+      },
+      "managementOperations": {
+        "createWorldMs": 2.19,
+        "createWorkspaceMs": 2.48,
+        "createDesktopMs": 3.05,
+        "reorderDesktopsMs": 2.8,
+        "archiveDesktopMs": 2.8,
+        "restoreDesktopMs": 2.25,
+        "inspectProjectMs": 1.87
+      },
+      "uiLifecycle": {
+        "wallRunMs": 1480.22,
+        "memory": {
+          "rssKiB": 144144,
+          "pssKiB": 90121,
+          "privateDirtyKiB": 74848,
+          "vmHwmKiB": 144144
+        },
+        "frames": {
+          "totalSwaps": 17,
+          "medianIntervalMs": 16.13,
+          "p95IntervalMs": 21.29,
+          "maxIntervalMs": 21.29,
+          "medianRenderMs": 8.22,
+          "p95RenderMs": 9.1
+        }
+      }
+    },
+    "stress": {
+      "fixture": {
+        "scenario": "stress",
+        "path": "/tmp/depthos-matrix-twf0gpva/stress.sqlite",
+        "worlds": 250,
+        "workspaces": 1250,
+        "desktops": 5000,
+        "generationTimeSeconds": 0.0338,
+        "fileSizeBytes": 2048000
+      },
+      "sqliteQueries": {
+        "treeQueryLatencyMs": {
+          "median": 93.93,
+          "min": 91.52,
+          "max": 99.1
+        },
+        "catalogCounts": {
+          "worlds": 250,
+          "workspaces": 1250,
+          "desktops": 5000
+        },
+        "workspaceListLatencyMs": 3.12
+      },
+      "managementOperations": {
+        "createWorldMs": 3.54,
+        "createWorkspaceMs": 3.16,
+        "createDesktopMs": 3.3,
+        "reorderDesktopsMs": 2.9,
+        "archiveDesktopMs": 2.66,
+        "restoreDesktopMs": 3.16,
+        "inspectProjectMs": 2.77
+      },
+      "uiLifecycle": {
+        "wallRunMs": 1618.63,
+        "memory": {
+          "rssKiB": 171728,
+          "pssKiB": 117593,
+          "privateDirtyKiB": 102408,
+          "vmHwmKiB": 171728
+        },
+        "frames": {
+          "totalSwaps": 17,
+          "medianIntervalMs": 15.89,
+          "p95IntervalMs": 20.39,
+          "maxIntervalMs": 20.39,
+          "medianRenderMs": 7.96,
+          "p95RenderMs": 8.55
+        }
+      }
+    }
+  }
+}

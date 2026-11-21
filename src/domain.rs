@@ -44,17 +44,31 @@ pub struct WorkspaceBranch {
     pub desktops: Vec<LogicalDesktop>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+fn default_version() -> i64 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct World {
     pub id: WorldId,
     pub name: String,
     pub description: Option<String>,
     pub sort_order: i64,
+    #[serde(default)]
+    pub visual_identity: Option<String>,
+    #[serde(default)]
+    pub artwork_identifier: Option<String>,
+    #[serde(default)]
+    pub is_archived: bool,
+    #[serde(default)]
+    pub archived_at_ms: Option<i64>,
+    #[serde(default = "default_version")]
+    pub version: i64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: WorkspaceId,
     pub world_id: WorldId,
@@ -62,19 +76,69 @@ pub struct Workspace {
     pub description: Option<String>,
     pub root_directory: Option<String>,
     pub sort_order: i64,
+    #[serde(default)]
+    pub visual_identity: Option<String>,
+    #[serde(default)]
+    pub is_archived: bool,
+    #[serde(default)]
+    pub archived_at_ms: Option<i64>,
+    #[serde(default = "default_version")]
+    pub version: i64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogicalDesktop {
     pub id: DesktopId,
     pub workspace_id: WorkspaceId,
     pub name: String,
     pub role: Option<String>,
     pub sort_order: i64,
+    #[serde(default)]
+    pub visual_identity: Option<String>,
+    #[serde(default)]
+    pub is_archived: bool,
+    #[serde(default)]
+    pub archived_at_ms: Option<i64>,
+    #[serde(default = "default_version")]
+    pub version: i64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedItem {
+    pub kind: String,
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+    pub archived_at_ms: i64,
+    pub version: i64,
+    pub child_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preference {
+    pub key: String,
+    pub value: String,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPreferences {
+    pub reduced_motion: bool,
+    pub low_effects: bool,
+    pub high_contrast: bool,
+    pub show_titles: bool,
+    pub accent_intensity: String,
+    pub default_landing_view: String,
+    pub last_world_id: Option<WorldId>,
+    pub last_workspace_id: Option<WorkspaceId>,
+    pub last_desktop_id: Option<DesktopId>,
 }
 
 /// Reserved policy categories for a future workspace configuration format.
@@ -113,6 +177,24 @@ pub enum Error {
     SqliteVersion(&'static str),
     #[error("unsupported database schema version {0}")]
     SchemaVersion(i64),
+    #[error(
+        "optimistic concurrency conflict on {entity}: expected version {expected}, actual version {actual}"
+    )]
+    Conflict {
+        entity: &'static str,
+        expected: i64,
+        actual: i64,
+    },
+    #[error("cannot archive {0}; it is already archived")]
+    AlreadyArchived(&'static str),
+    #[error("cannot restore {0}; it is not archived")]
+    NotArchived(&'static str),
+    #[error("parent {0} is archived; restore it first")]
+    ParentArchived(&'static str),
+    #[error("invalid project directory: {0}")]
+    InvalidProjectDirectory(String),
+    #[error("operation {0} has already been processed")]
+    OperationDuplicate(String),
     #[error("file is not a DepthOS database")]
     ForeignDatabase,
     #[error("database path is unsafe or inaccessible: {0}")]
@@ -127,6 +209,8 @@ pub enum Error {
     Output(#[from] std::io::Error),
     #[error("serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("invalid UUID: {0}")]
+    Uuid(#[from] uuid::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

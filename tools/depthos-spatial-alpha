@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -27,11 +28,53 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-QML_FILE = ROOT / "experiments/spatial-alpha/main.qml"
 DEPTHOS = None
 CONTROLLER_SERVICE = "org.depthos.Controller"
 CONTROLLER_PATH = "/org/depthos/Controller"
 CONTROLLER_INTERFACE = "org.depthos.Controller1"
+
+
+def discover_qml_file():
+    """Locate the main.qml file for DepthOS Spatial Alpha.
+    Order:
+      1. DEPTHOS_QML_FILE or DEPTHOS_QML_DIR / main.qml
+      2. Sibling prefix: <prefix>/share/depthos/spatial-alpha/main.qml
+      3. XDG_DATA_HOME / depthos/spatial-alpha/main.qml
+      4. XDG_DATA_DIRS entries / depthos/spatial-alpha/main.qml
+      5. Development fallback: ROOT / experiments/spatial-alpha/main.qml
+    """
+    candidates = []
+
+    if os.environ.get("DEPTHOS_QML_FILE"):
+        candidates.append(Path(os.environ["DEPTHOS_QML_FILE"]))
+    if os.environ.get("DEPTHOS_QML_DIR"):
+        candidates.append(Path(os.environ["DEPTHOS_QML_DIR"]) / "main.qml")
+
+    script_dir = Path(__file__).resolve().parent
+    prefix = script_dir.parent
+    candidates.append(prefix / "share" / "depthos" / "spatial-alpha" / "main.qml")
+
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    if xdg_data_home:
+        candidates.append(Path(xdg_data_home) / "depthos" / "spatial-alpha" / "main.qml")
+    else:
+        candidates.append(Path.home() / ".local" / "share" / "depthos" / "spatial-alpha" / "main.qml")
+
+    xdg_data_dirs = os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
+    for d in xdg_data_dirs.split(":"):
+        d_str = d.strip()
+        if d_str:
+            candidates.append(Path(d_str) / "depthos" / "spatial-alpha" / "main.qml")
+
+    candidates.append(ROOT / "experiments" / "spatial-alpha" / "main.qml")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    return candidates[-1]
+
+
+QML_FILE = discover_qml_file()
 
 
 def date_label(timestamp_ms=None):
@@ -55,30 +98,60 @@ BLOCKED_DB_STATES = {
 
 
 def depthos_executable():
-    """Locate the depthos binary without touching a database."""
+    """Locate the depthos binary without touching a database.
+    Order:
+      1. Explicit global DEPTHOS / CLI override
+      2. DEPTHOS_BIN env var
+      3. Sibling binary in the same directory: <prefix>/bin/depthos
+      4. System PATH: shutil.which("depthos")
+      5. Development fallback: ROOT/target/release/depthos, ROOT/target/debug/depthos, CARGO_TARGET_DIR
+    """
     candidates = []
     if DEPTHOS:
         candidates.append(Path(DEPTHOS))
     env_bin = os.environ.get("DEPTHOS_BIN")
     if env_bin:
         candidates.append(Path(env_bin))
+
+    # Sibling binary: e.g. <prefix>/bin/depthos when launcher is <prefix>/bin/depthos-spatial-alpha
+    sibling = Path(__file__).resolve().parent / "depthos"
+    candidates.append(sibling)
+
+    # PATH lookup
+    path_bin = shutil.which("depthos")
+    if path_bin:
+        candidates.append(Path(path_bin))
+
+    # Development repository fallback
     cargo = os.environ.get("CARGO_TARGET_DIR")
     if cargo:
-        candidates.append(Path(cargo) / "debug" / "depthos")
         candidates.append(Path(cargo) / "release" / "depthos")
-    candidates.append(ROOT / "target" / "debug" / "depthos")
+        candidates.append(Path(cargo) / "debug" / "depthos")
     candidates.append(ROOT / "target" / "release" / "depthos")
+    candidates.append(ROOT / "target" / "debug" / "depthos")
+
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
+            return candidate.resolve()
     return None
 
 
-def run_depthos(args):
+def run_depthos(args, timeout=10.0):
     exe = depthos_executable()
     if exe is None:
         return None
-    return subprocess.run([str(exe), *args], capture_output=True, text=True)
+    try:
+        return subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args, returncode=124, stdout="",
+            stderr=f"depthos command timed out after {timeout} seconds",
+        )
+    except Exception as exc:
+        return subprocess.CompletedProcess(
+            args, returncode=1, stdout="",
+            stderr=str(exc),
+        )
 
 
 def status_json(db_path):
@@ -146,6 +219,9 @@ def load_from_db_path(db_path, backend):
                 "id": w_id,
                 "name": world_info.get("name", "World"),
                 "description": world_info.get("description") or "",
+                "visualIdentity": world_info.get("visual_identity") or "",
+                "artworkIdentifier": world_info.get("artwork_identifier") or "",
+                "version": world_info.get("version", 1),
             })
             for ws in w.get("workspaces", []):
                 ws_info = ws.get("workspace", {})
@@ -156,6 +232,8 @@ def load_from_db_path(db_path, backend):
                     "name": ws_info.get("name", "Workspace"),
                     "description": ws_info.get("description") or "",
                     "rootDirectory": ws_info.get("root_directory") or "",
+                    "visualIdentity": ws_info.get("visual_identity") or "",
+                    "version": ws_info.get("version", 1),
                     "updatedAt": date_label(ws_info["updated_at_ms"]) if ws_info.get("updated_at_ms") else "",
                 })
                 for d in ws.get("desktops", []):
@@ -163,21 +241,31 @@ def load_from_db_path(db_path, backend):
                         "id": d.get("id"),
                         "workspaceId": ws_id,
                         "name": d.get("name", "Desktop"),
-                        "role": d.get("role") or ""
+                        "role": d.get("role") or "",
+                        "visualIdentity": d.get("visual_identity") or "",
+                        "version": d.get("version", 1),
                     })
         backend.setProperty("worlds", worlds)
         backend.setProperty("workspaces", workspaces)
         backend.setProperty("desktops", desktops)
         backend.setProperty("windows", [])
         apply_sqlite_provenance(backend, db_path)
-        if worlds:
-            backend.setProperty("selectedWorldId", worlds[0]["id"])
-            sub_ws = [ws for ws in workspaces if ws["worldId"] == worlds[0]["id"]]
-            if sub_ws:
-                backend.setProperty("selectedWorkspaceId", sub_ws[0]["id"])
-                sub_d = [d for d in desktops if d["workspaceId"] == sub_ws[0]["id"]]
-                if sub_d:
-                    backend.setProperty("selectedDesktopId", sub_d[0]["id"])
+
+        prev_world = backend.property("selectedWorldId")
+        prev_ws = backend.property("selectedWorkspaceId")
+        prev_dt = backend.property("selectedDesktopId")
+
+        world = next((w for w in worlds if w["id"] == prev_world), worlds[0] if worlds else None)
+        descendants = [w for w in workspaces if world and w["worldId"] == world["id"]]
+        workspace = next((w for w in descendants if w["id"] == prev_ws),
+                         descendants[0] if descendants else None)
+        descendants_dt = [d for d in desktops if workspace and d["workspaceId"] == workspace["id"]]
+        desktop = next((d for d in descendants_dt if d["id"] == prev_dt),
+                       descendants_dt[0] if descendants_dt else None)
+
+        backend.setProperty("selectedWorldId", world["id"] if world else "")
+        backend.setProperty("selectedWorkspaceId", workspace["id"] if workspace else "")
+        backend.setProperty("selectedDesktopId", desktop["id"] if desktop else "")
         return True
     except Exception:
         sys.stderr.write("depthos-spatial-alpha: Could not read the logical hierarchy from SQLite.\n")
@@ -513,11 +601,14 @@ def main():
         engine.addImageProvider("world-art", ArtworkProvider(QQuickImageProvider.ImageType.Image))
 
 
-    if not QML_FILE.exists():
-        sys.stderr.write(f"depthos-spatial-alpha: QML file not found: {QML_FILE}\n")
+    qml_file = discover_qml_file()
+    if not qml_file.exists():
+        sys.stderr.write(f"depthos-spatial-alpha: QML file not found: {qml_file}\n")
         sys.exit(1)
 
-    engine.load(QUrl.fromLocalFile(str(QML_FILE)))
+    qml_dir = qml_file.parent
+    engine.addImportPath(str(qml_dir))
+    engine.load(QUrl.fromLocalFile(str(qml_file)))
 
     if not engine.rootObjects():
         sys.stderr.write("depthos-spatial-alpha: Failed to load QML root object\n")
@@ -538,11 +629,19 @@ def main():
         root.setProperty("reducedMotion", True)
 
     class HostBridge(QObject):
-        def __init__(self, be, sc, db_path):
+        managementCompleted = pyqtSignal(str, bool, str)
+        hierarchyChanged = pyqtSignal()
+
+        def __init__(self, be, sc, db_path, root_win):
             super().__init__()
             self.be = be
             self.sc = sc
             self.db_path = db_path
+            self.root_win = root_win
+
+        def _db_args(self):
+            path = self.be.property("databasePath") or (str(self.db_path) if self.db_path else "")
+            return ["--db", str(path)] if path else []
 
         @pyqtSlot()
         def createWorkspace(self):
@@ -580,10 +679,277 @@ def main():
             self.be.setProperty("onboardingState", "success")
             if self.sc:
                 self.sc.syncIndices()
+            self.hierarchyChanged.emit()
 
         @pyqtSlot()
         def retryProbe(self):
             choose_source(self.be, self.sc, self.db_path, allow_controller=self.db_path is None)
+
+        @pyqtSlot(str, result=str)
+        def executeManagement(self, req_json):
+            if not req_json or len(req_json.encode("utf-8")) > 1048576:
+                return json.dumps({
+                    "success": False,
+                    "error": "Management request payload exceeds 1 MiB limit or is empty",
+                    "code": "invalid_payload"
+                })
+
+            try:
+                req_obj = json.loads(req_json)
+                action = req_obj.get("action", "")
+            except Exception as e:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Invalid JSON payload: {e}",
+                    "code": "malformed_json"
+                })
+
+            allowed_actions = {
+                "create", "update", "reorder", "archive", "restore",
+                "delete", "inspectProject", "getPreferences", "setPreferences"
+            }
+            if action not in allowed_actions:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Disallowed action '{action}'. Permitted actions: {sorted(allowed_actions)}",
+                    "code": "invalid_action"
+                })
+
+            if self.be.property("isDemo"):
+                return self._execute_mock_management(req_json)
+
+            path = self.be.property("databasePath") or (str(self.db_path) if self.db_path else "")
+            if not path:
+                return json.dumps({
+                    "success": False,
+                    "error": "No database path configured. Initialize a database first.",
+                    "code": "no_database"
+                })
+
+            proc = run_depthos(["--db", str(path), "manage", "exec", "--request", req_json], timeout=10.0)
+            if proc is None:
+                return json.dumps({
+                    "success": False,
+                    "error": "depthos executable not found",
+                    "code": "missing_binary"
+                })
+
+            if proc.returncode == 124:
+                return json.dumps({
+                    "success": False,
+                    "error": proc.stderr.strip() or "Operation timed out",
+                    "code": "timeout"
+                })
+
+            stdout = proc.stdout.strip()
+            try:
+                resp = json.loads(stdout)
+            except Exception:
+                return json.dumps({
+                    "success": False,
+                    "error": proc.stderr.strip() or stdout or "Unknown execution failure",
+                    "code": "exec_failed"
+                })
+
+            if resp.get("success"):
+                try:
+                    if action in ("create", "update", "reorder", "archive", "restore", "delete"):
+                        load_from_db_path(path, self.be)
+                        if self.sc:
+                            self.sc.syncIndices()
+                        self.hierarchyChanged.emit()
+                except Exception as exc:
+                    sys.stderr.write(f"depthos-spatial-alpha: error reloading after management: {exc}\n")
+
+            return stdout
+
+        def _execute_mock_management(self, req_json):
+            try:
+                req = json.loads(req_json)
+            except Exception as e:
+                return json.dumps({"success": False, "error": str(e), "code": "invalid_json"})
+
+            action = req.get("action", "")
+            entity = req.get("entity", "")
+            op_id = req.get("operationId")
+            p = req.get("payload") or {}
+
+            if action == "inspectProject":
+                path = p.get("path") or req.get("id") or ""
+                return self.inspectProject(path)
+
+            if action == "getArchived":
+                return json.dumps({"success": True, "data": []})
+
+            if action == "getAssociationImpact":
+                return json.dumps({"success": True, "data": {"ruleCount": 0}})
+
+            if action == "create":
+                new_id = f"mock-{int(time.time() * 1000)}"
+                if entity == "world":
+                    worlds = list(self.be.property("worlds") or [])
+                    worlds.append({
+                        "id": new_id,
+                        "name": p.get("name", "New World"),
+                        "description": p.get("description", ""),
+                        "visualIdentity": p.get("visualIdentity", "neon-cyan"),
+                        "artworkIdentifier": p.get("artwork", "cyber-grid"),
+                        "version": 1,
+                    })
+                    self.be.setProperty("worlds", worlds)
+                elif entity == "workspace":
+                    workspaces = list(self.be.property("workspaces") or [])
+                    workspaces.append({
+                        "id": new_id,
+                        "worldId": req.get("parentId", ""),
+                        "name": p.get("name", "New Workspace"),
+                        "description": p.get("description", ""),
+                        "rootDirectory": p.get("rootDirectory", ""),
+                        "visualIdentity": p.get("visualIdentity", "neon-cyan"),
+                        "version": 1,
+                    })
+                    self.be.setProperty("workspaces", workspaces)
+                elif entity == "desktop":
+                    desktops = list(self.be.property("desktops") or [])
+                    desktops.append({
+                        "id": new_id,
+                        "workspaceId": req.get("parentId", ""),
+                        "name": p.get("name", "New Desktop"),
+                        "role": p.get("role", "dev"),
+                        "visualIdentity": p.get("visualIdentity", "neon-cyan"),
+                        "version": 1,
+                    })
+                    self.be.setProperty("desktops", desktops)
+                if self.sc:
+                    self.sc.syncIndices()
+                self.hierarchyChanged.emit()
+                return json.dumps({"success": True, "operationId": op_id, "id": new_id, "version": 1})
+
+            if action in ("update", "archive", "restore", "delete"):
+                return json.dumps({"success": True, "operationId": op_id, "id": req.get("id"), "version": 2})
+
+            return json.dumps({"success": True, "operationId": op_id})
+
+        @pyqtSlot(str, result=str)
+        def inspectProject(self, path):
+            proc = run_depthos(["project", "inspect", path])
+            if proc is None:
+                return json.dumps({
+                    "path": path,
+                    "isAbsolute": False,
+                    "exists": False,
+                    "isDirectory": False,
+                    "isSymlink": False,
+                    "isReadable": False,
+                    "isWritable": False,
+                    "git": None,
+                    "status": "binary_missing",
+                    "warning": "depthos binary not found"
+                })
+            return proc.stdout.strip()
+
+        @pyqtSlot(result=str)
+        def getArchivedItems(self):
+            if self.be.property("isDemo"):
+                return json.dumps([])
+            path = self.be.property("databasePath") or (str(self.db_path) if self.db_path else "")
+            if not path or not Path(path).is_file():
+                return json.dumps([])
+            proc = run_depthos(["--db", str(path), "archived", "list"])
+            if proc is None or proc.returncode != 0:
+                return json.dumps([])
+            return proc.stdout.strip()
+
+        @pyqtSlot(str, str, result=int)
+        def getAssociationImpact(self, entity, entity_id):
+            if self.be.property("isDemo"):
+                return 0
+            path = self.be.property("databasePath") or (str(self.db_path) if self.db_path else "")
+            if not path or not Path(path).is_file():
+                return 0
+            req = {
+                "action": "getAssociationImpact",
+                "entity": entity,
+                "id": entity_id
+            }
+            proc = run_depthos(["--db", str(path), "manage", "exec", "--request", json.dumps(req)])
+            if proc is None or proc.returncode != 0:
+                return 0
+            try:
+                data = json.loads(proc.stdout)
+                return data.get("data", {}).get("ruleCount", 0)
+            except Exception:
+                return 0
+
+        @pyqtSlot(str, str)
+        def setPreference(self, key, value):
+            if self.be.property("isDemo"):
+                return
+            path = self.be.property("databasePath") or (str(self.db_path) if self.db_path else "")
+            if not path or not Path(path).is_file():
+                return
+            run_depthos(["--db", str(path), "preferences", "set", key, value])
+
+        @pyqtSlot(str, result=str)
+        def getPreference(self, key):
+            if self.be.property("isDemo"):
+                return ""
+            path = self.be.property("databasePath") or (str(self.db_path) if self.db_path else "")
+            if not path or not Path(path).is_file():
+                return ""
+            proc = run_depthos(["--db", str(path), "preferences", "get", key])
+            if proc is None or proc.returncode != 0:
+                return ""
+            try:
+                data = json.loads(proc.stdout)
+                return data.get("value") or ""
+            except Exception:
+                return ""
+
+        @pyqtSlot()
+        def reloadHierarchy(self):
+            path = self.be.property("databasePath") or (str(self.db_path) if self.db_path else "")
+            if path and Path(path).is_file():
+                load_from_db_path(path, self.be)
+                if self.sc:
+                    self.sc.syncIndices()
+                self.hierarchyChanged.emit()
+
+        def load_preferences_into_ui(self):
+            if self.be.property("isDemo"):
+                return
+            path = self.be.property("databasePath") or (str(self.db_path) if self.db_path else "")
+            if not path or not Path(path).is_file():
+                return
+            req = {"action": "getPreferences"}
+            proc = run_depthos(["--db", str(path), "manage", "exec", "--request", json.dumps(req)])
+            if proc is not None and proc.returncode == 0:
+                try:
+                    data = json.loads(proc.stdout).get("data", {})
+                    if data.get("reducedMotion") is True:
+                        self.root_win.setProperty("reducedMotion", True)
+                    if data.get("lowEffects") is True and self.sc:
+                        self.sc.setProperty("lowEffects", True)
+                    if data.get("highContrast") is True and self.sc:
+                        self.sc.setProperty("highContrast", True)
+                    if "showTitles" in data and self.sc:
+                        self.sc.setProperty("showTitles", bool(data.get("showTitles")))
+                    if data.get("defaultLandingView") and self.sc:
+                        v = data["defaultLandingView"]
+                        if v == "workspaces":
+                            self.sc.setProperty("currentLevel", 2)
+                        elif v == "desktops":
+                            self.sc.setProperty("currentLevel", 3)
+                        else:
+                            self.sc.setProperty("currentLevel", 1)
+                    if data.get("lastWorldId"):
+                        self.be.selectWorld(data["lastWorldId"])
+                    if data.get("lastWorkspaceId"):
+                        self.be.selectWorkspace(data["lastWorkspaceId"])
+                    if data.get("lastDesktopId"):
+                        self.be.selectDesktop(data["lastDesktopId"])
+                except Exception as e:
+                    sys.stderr.write(f"depthos-spatial-alpha: Could not apply saved preferences: {e}\n")
 
     def show_probe_failure(be, message, detail):
         clear_hierarchy(be)
@@ -782,10 +1148,11 @@ def main():
             return
         present_database(be, sc, None)
 
-    bridge = HostBridge(backend, scene, args.db)
+    bridge = HostBridge(backend, scene, args.db, root)
     root.setProperty("hostBridge", bridge)
     engine.bridge_ref = bridge
     choose_source(backend, scene, args.db, allow_controller=args.db is None)
+    bridge.load_preferences_into_ui()
 
     def finish_sync():
         state = backend.property("onboardingState")

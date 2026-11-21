@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Write},
+    io::{self, Read, Write},
     path::PathBuf,
     process::ExitCode,
 };
@@ -10,6 +10,7 @@ use depthos_core::{
     associations::RuleKind,
     domain::{DesktopId, Error, Result, WorkspaceId, WorldId},
     observed::ObservedStateSource,
+    service::{DesktopUpdate, WorkspaceUpdate, WorldUpdate, inspect_project_directory},
     sqlite::{
         SqliteStore, default_path,
         init::{InitOptions, initialize, initialize_default, probe},
@@ -41,6 +42,18 @@ enum Command {
     /// Configure a logical-only association rule in an existing SQLite database.
     #[command(subcommand)]
     Association(AssociationCommand),
+    /// Manage user preferences.
+    #[command(subcommand)]
+    Preferences(PreferencesCommand),
+    /// Inspect local project directory and non-interactive Git metadata.
+    #[command(subcommand)]
+    Project(ProjectCommand),
+    /// List archived hierarchy records.
+    #[command(subcommand)]
+    Archived(ArchivedCommand),
+    /// Execute a transactional management operation from structured JSON.
+    #[command(subcommand)]
+    Manage(ManageCommand),
     /// Print the complete logical hierarchy as JSON. Strictly read-only: never
     /// creates, migrates or repairs a database (run `depthos init` first).
     Tree,
@@ -146,11 +159,45 @@ enum WorldCommand {
         name: String,
         #[arg(long)]
         description: Option<String>,
+        #[arg(long)]
+        visual_identity: Option<String>,
+        #[arg(long)]
+        artwork: Option<String>,
     },
-    List,
+    List {
+        #[arg(long)]
+        archived: bool,
+    },
     Rename {
         id: WorldId,
         name: String,
+    },
+    Update {
+        id: WorldId,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        visual_identity: Option<String>,
+        #[arg(long)]
+        artwork: Option<String>,
+        #[arg(long)]
+        version: Option<i64>,
+    },
+    Reorder {
+        #[arg(required = true)]
+        ids: Vec<WorldId>,
+    },
+    Archive {
+        id: WorldId,
+        #[arg(long)]
+        version: Option<i64>,
+    },
+    Restore {
+        id: WorldId,
+        #[arg(long)]
+        version: Option<i64>,
     },
     /// Delete an empty world.
     Delete {
@@ -169,19 +216,52 @@ enum WorkspaceCommand {
         description: Option<String>,
         #[arg(long)]
         root_directory: Option<String>,
+        #[arg(long)]
+        visual_identity: Option<String>,
     },
     List {
         #[arg(long)]
         world: WorldId,
+        #[arg(long)]
+        archived: bool,
     },
     Rename {
         id: WorkspaceId,
         name: String,
     },
+    Update {
+        id: WorkspaceId,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        root_directory: Option<String>,
+        #[arg(long)]
+        visual_identity: Option<String>,
+        #[arg(long)]
+        version: Option<i64>,
+    },
+    Reorder {
+        #[arg(long)]
+        world: WorldId,
+        #[arg(required = true)]
+        ids: Vec<WorkspaceId>,
+    },
     Move {
         id: WorkspaceId,
         #[arg(long)]
         world: WorldId,
+    },
+    Archive {
+        id: WorkspaceId,
+        #[arg(long)]
+        version: Option<i64>,
+    },
+    Restore {
+        id: WorkspaceId,
+        #[arg(long)]
+        version: Option<i64>,
     },
     /// Delete an empty workspace.
     Delete {
@@ -198,14 +278,29 @@ enum DesktopCommand {
         name: String,
         #[arg(long)]
         role: Option<String>,
+        #[arg(long)]
+        visual_identity: Option<String>,
     },
     List {
         #[arg(long)]
         workspace: WorkspaceId,
+        #[arg(long)]
+        archived: bool,
     },
     Rename {
         id: DesktopId,
         name: String,
+    },
+    Update {
+        id: DesktopId,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long)]
+        visual_identity: Option<String>,
+        #[arg(long)]
+        version: Option<i64>,
     },
     /// Supply all desktop IDs in their desired order.
     Reorder {
@@ -214,8 +309,49 @@ enum DesktopCommand {
         #[arg(required = true)]
         ids: Vec<DesktopId>,
     },
+    Archive {
+        id: DesktopId,
+        #[arg(long)]
+        version: Option<i64>,
+    },
+    Restore {
+        id: DesktopId,
+        #[arg(long)]
+        version: Option<i64>,
+    },
     Delete {
         id: DesktopId,
+    },
+}
+
+#[derive(Subcommand)]
+enum PreferencesCommand {
+    /// Retrieve a preference value by key.
+    Get { key: String },
+    /// Store a preference key-value pair.
+    Set { key: String, value: String },
+    /// List all stored preferences.
+    List,
+}
+
+#[derive(Subcommand)]
+enum ProjectCommand {
+    /// Inspect a directory path for existence, permissions, and safe Git repository metadata.
+    Inspect { path: String },
+}
+
+#[derive(Subcommand)]
+enum ArchivedCommand {
+    /// List all archived worlds, workspaces, and desktops.
+    List,
+}
+
+#[derive(Subcommand)]
+enum ManageCommand {
+    /// Execute a structured JSON management request (from string or stdin).
+    Exec {
+        #[arg(long)]
+        request: Option<String>,
     },
 }
 
@@ -268,17 +404,34 @@ fn run_init(cli: &Cli, default_hierarchy: bool) -> Result<()> {
 }
 
 fn command_is_read_only(command: &Command) -> bool {
-    matches!(
-        command,
+    match command {
         Command::Tree
-            | Command::Doctor
-            | Command::World(WorldCommand::List)
-            | Command::Workspace(WorkspaceCommand::List { .. })
-            | Command::Desktop(DesktopCommand::List { .. })
-    )
+        | Command::Doctor
+        | Command::World(WorldCommand::List { .. })
+        | Command::Workspace(WorkspaceCommand::List { .. })
+        | Command::Desktop(DesktopCommand::List { .. })
+        | Command::Preferences(PreferencesCommand::Get { .. } | PreferencesCommand::List)
+        | Command::Project(ProjectCommand::Inspect { .. })
+        | Command::Archived(ArchivedCommand::List) => true,
+        Command::Manage(ManageCommand::Exec { request }) => {
+            let action = request
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .and_then(|v| v["action"].as_str().map(String::from));
+            matches!(
+                action.as_deref(),
+                Some("getPreferences" | "getArchived" | "getAssociationImpact")
+            )
+        }
+        _ => false,
+    }
 }
 
 fn run(cli: Cli) -> Result<bool> {
+    if let Command::Project(ProjectCommand::Inspect { path }) = &cli.command {
+        let inspection = inspect_project_directory(path);
+        return json(inspection).map(|_| true);
+    }
     if let Command::Association(command) = &cli.command {
         let (kind, key, target) = match command {
             AssociationCommand::Set {
@@ -314,11 +467,56 @@ fn run(cli: Cli) -> Result<bool> {
     let service = application.logical_mut();
     match cli.command {
         Command::World(command) => match command {
-            WorldCommand::Create { name, description } => {
-                status(service.create_world(&name, description)?)?
+            WorldCommand::Create {
+                name,
+                description,
+                visual_identity,
+                artwork,
+            } => {
+                status(service.create_world_full(&name, description, visual_identity, artwork)?)?
             }
-            WorldCommand::List => json(service.worlds()?)?,
+            WorldCommand::List { archived } => {
+                if archived {
+                    let items: Vec<_> = service
+                        .archived_items()?
+                        .into_iter()
+                        .filter(|i| i.kind == "world")
+                        .collect();
+                    json(items)?
+                } else {
+                    json(service.worlds()?)?
+                }
+            }
             WorldCommand::Rename { id, name } => service.rename_world(id, &name)?,
+            WorldCommand::Update {
+                id,
+                name,
+                description,
+                visual_identity,
+                artwork,
+                version,
+            } => {
+                service.update_world(
+                    id,
+                    WorldUpdate {
+                        name,
+                        description: description.map(Some),
+                        visual_identity: visual_identity.map(Some),
+                        artwork_identifier: artwork.map(Some),
+                    },
+                    version,
+                )?;
+                status(id)?
+            }
+            WorldCommand::Reorder { ids } => service.reorder_worlds(ids)?,
+            WorldCommand::Archive { id, version } => {
+                service.archive_world(id, version)?;
+                status(id)?
+            }
+            WorldCommand::Restore { id, version } => {
+                service.restore_world(id, version)?;
+                status(id)?
+            }
             WorldCommand::Delete { id } => service.delete_world(id)?,
         },
         Command::Workspace(command) => match command {
@@ -327,10 +525,59 @@ fn run(cli: Cli) -> Result<bool> {
                 name,
                 description,
                 root_directory,
-            } => status(service.create_workspace(world, &name, description, root_directory)?)?,
-            WorkspaceCommand::List { world } => json(service.workspaces(world)?)?,
+                visual_identity,
+            } => status(service.create_workspace_full(
+                world,
+                &name,
+                description,
+                root_directory,
+                visual_identity,
+            )?)?,
+            WorkspaceCommand::List { world, archived } => {
+                if archived {
+                    let items: Vec<_> = service
+                        .archived_items()?
+                        .into_iter()
+                        .filter(|i| {
+                            i.kind == "workspace" && i.parent_id == Some(world.0.to_string())
+                        })
+                        .collect();
+                    json(items)?
+                } else {
+                    json(service.workspaces(world)?)?
+                }
+            }
             WorkspaceCommand::Rename { id, name } => service.rename_workspace(id, &name)?,
+            WorkspaceCommand::Update {
+                id,
+                name,
+                description,
+                root_directory,
+                visual_identity,
+                version,
+            } => {
+                service.update_workspace(
+                    id,
+                    WorkspaceUpdate {
+                        name,
+                        description: description.map(Some),
+                        root_directory: root_directory.map(Some),
+                        visual_identity: visual_identity.map(Some),
+                    },
+                    version,
+                )?;
+                status(id)?
+            }
+            WorkspaceCommand::Reorder { world, ids } => service.reorder_workspaces(world, ids)?,
             WorkspaceCommand::Move { id, world } => service.move_workspace(id, world)?,
+            WorkspaceCommand::Archive { id, version } => {
+                service.archive_workspace(id, version)?;
+                status(id)?
+            }
+            WorkspaceCommand::Restore { id, version } => {
+                service.restore_workspace(id, version)?;
+                status(id)?
+            }
             WorkspaceCommand::Delete { id } => service.delete_workspace(id)?,
         },
         Command::Desktop(command) => match command {
@@ -338,14 +585,73 @@ fn run(cli: Cli) -> Result<bool> {
                 workspace,
                 name,
                 role,
-            } => status(service.create_desktop(workspace, &name, role)?)?,
-            DesktopCommand::List { workspace } => json(service.desktops(workspace)?)?,
+                visual_identity,
+            } => status(service.create_desktop_full(workspace, &name, role, visual_identity)?)?,
+            DesktopCommand::List {
+                workspace,
+                archived,
+            } => {
+                if archived {
+                    let items: Vec<_> = service
+                        .archived_items()?
+                        .into_iter()
+                        .filter(|i| {
+                            i.kind == "desktop" && i.parent_id == Some(workspace.0.to_string())
+                        })
+                        .collect();
+                    json(items)?
+                } else {
+                    json(service.desktops(workspace)?)?
+                }
+            }
             DesktopCommand::Rename { id, name } => service.rename_desktop(id, &name)?,
+            DesktopCommand::Update {
+                id,
+                name,
+                role,
+                visual_identity,
+                version,
+            } => {
+                service.update_desktop(
+                    id,
+                    DesktopUpdate {
+                        name,
+                        role: role.map(Some),
+                        visual_identity: visual_identity.map(Some),
+                    },
+                    version,
+                )?;
+                status(id)?
+            }
             DesktopCommand::Reorder { workspace, ids } => {
                 service.reorder_desktops(workspace, ids)?
             }
+            DesktopCommand::Archive { id, version } => {
+                service.archive_desktop(id, version)?;
+                status(id)?
+            }
+            DesktopCommand::Restore { id, version } => {
+                service.restore_desktop(id, version)?;
+                status(id)?
+            }
             DesktopCommand::Delete { id } => service.delete_desktop(id)?,
         },
+        Command::Preferences(command) => match command {
+            PreferencesCommand::Get { key } => {
+                let val = service.get_preference(&key)?;
+                json(serde_json::json!({ "key": key, "value": val }))?
+            }
+            PreferencesCommand::Set { key, value } => {
+                service.set_preference(&key, &value)?;
+                json(serde_json::json!({ "key": key, "value": value }))?
+            }
+            PreferencesCommand::List => json(service.list_preferences()?)?,
+        },
+        Command::Project(_) => unreachable!(),
+        Command::Archived(ArchivedCommand::List) => json(service.archived_items()?)?,
+        Command::Manage(ManageCommand::Exec { request }) => {
+            return handle_manage_exec(service, request.as_deref());
+        }
         Command::Tree => json(service.tree()?)?,
         Command::Doctor
         | Command::Association(_)
@@ -358,6 +664,580 @@ fn run(cli: Cli) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ManagementRequest {
+    #[serde(default)]
+    operation_id: Option<String>,
+    action: String,
+    #[serde(default)]
+    entity: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    parent_id: Option<String>,
+    #[serde(default)]
+    expected_version: Option<i64>,
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ManagementResponse {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+}
+
+fn handle_manage_exec<S: depthos_core::service::Store>(
+    service: &mut depthos_core::service::WorkspaceService<S>,
+    raw_request: Option<&str>,
+) -> Result<bool> {
+    let raw_input = match raw_request {
+        Some("-") | None => {
+            let mut buf = String::new();
+            io::stdin().read_to_string(&mut buf)?;
+            buf
+        }
+        Some(s) => s.to_string(),
+    };
+
+    let req: ManagementRequest = match serde_json::from_str(&raw_input) {
+        Ok(r) => r,
+        Err(e) => {
+            let resp = ManagementResponse {
+                success: false,
+                operation_id: None,
+                id: None,
+                version: None,
+                data: None,
+                error: Some(format!("Invalid management request JSON: {e}")),
+                code: Some("invalid_request".into()),
+            };
+            json(resp)?;
+            return Ok(false);
+        }
+    };
+
+    let op_id = req.operation_id.clone();
+    let action = req.action.as_str();
+    let entity = req.entity.as_deref().unwrap_or("");
+
+    let result: std::result::Result<ManagementResponse, Error> = (|| match action {
+        "inspectProject" => {
+            let path = req
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("path"))
+                .and_then(|v| v.as_str())
+                .or(req.id.as_deref())
+                .unwrap_or("");
+            let inspection = inspect_project_directory(path);
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: None,
+                version: None,
+                data: Some(serde_json::to_value(inspection)?),
+                error: None,
+                code: None,
+            })
+        }
+        "getArchived" => {
+            let items = service.archived_items()?;
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: None,
+                version: None,
+                data: Some(serde_json::to_value(items)?),
+                error: None,
+                code: None,
+            })
+        }
+        "getPreferences" => {
+            let prefs = service.get_user_preferences()?;
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: None,
+                version: None,
+                data: Some(serde_json::to_value(prefs)?),
+                error: None,
+                code: None,
+            })
+        }
+        "getPreference" => {
+            let key = req
+                .payload
+                .as_ref()
+                .and_then(|p| p.get("key"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| Error::InvalidMetadata("missing key in preference request"))?;
+            let val = service.get_preference(key)?;
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: None,
+                version: None,
+                data: Some(serde_json::json!({ "key": key, "value": val })),
+                error: None,
+                code: None,
+            })
+        }
+        "setPreference" => {
+            let p = req
+                .payload
+                .as_ref()
+                .ok_or_else(|| Error::InvalidMetadata("missing payload in setPreference"))?;
+            let key = p
+                .get("key")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| Error::InvalidMetadata("missing key"))?;
+            let value = p
+                .get("value")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| Error::InvalidMetadata("missing value"))?;
+            service.set_preference(key, value)?;
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: None,
+                version: None,
+                data: Some(serde_json::json!({ "key": key, "value": value })),
+                error: None,
+                code: None,
+            })
+        }
+        "saveUserPreferences" => {
+            let p = req
+                .payload
+                .as_ref()
+                .ok_or_else(|| Error::InvalidMetadata("missing payload in saveUserPreferences"))?;
+            let prefs: depthos_core::domain::UserPreferences = serde_json::from_value(p.clone())?;
+            service.save_user_preferences(&prefs)?;
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: None,
+                version: None,
+                data: None,
+                error: None,
+                code: None,
+            })
+        }
+        "getAssociationImpact" => {
+            let id_str = req
+                .id
+                .as_deref()
+                .ok_or_else(|| Error::InvalidMetadata("missing id"))?;
+            let count = match entity {
+                "desktop" => {
+                    let did = id_str.parse::<DesktopId>()?;
+                    service.desktop_association_count(did)?
+                }
+                "workspace" => {
+                    let wid = id_str.parse::<WorkspaceId>()?;
+                    service.workspace_association_count(wid)?
+                }
+                "world" => {
+                    let wid = id_str.parse::<WorldId>()?;
+                    service.world_association_count(wid)?
+                }
+                _ => 0,
+            };
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: Some(id_str.into()),
+                version: None,
+                data: Some(
+                    serde_json::json!({ "entity": entity, "id": id_str, "ruleCount": count }),
+                ),
+                error: None,
+                code: None,
+            })
+        }
+        "create" => {
+            let p = req.payload.as_ref().unwrap_or(&serde_json::Value::Null);
+            match entity {
+                "world" => {
+                    let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let desc = p
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let vis = p
+                        .get("visualIdentity")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let art = p.get("artwork").and_then(|v| v.as_str()).map(String::from);
+                    let id = service.create_world_full(name, desc, vis, art)?;
+                    Ok(ManagementResponse {
+                        success: true,
+                        operation_id: op_id.clone(),
+                        id: Some(id.0.to_string()),
+                        version: Some(1),
+                        data: None,
+                        error: None,
+                        code: None,
+                    })
+                }
+                "workspace" => {
+                    let parent = req
+                        .parent_id
+                        .as_deref()
+                        .ok_or_else(|| Error::InvalidMetadata("missing parentId for workspace"))?
+                        .parse::<WorldId>()?;
+                    let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let desc = p
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let root = p
+                        .get("rootDirectory")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let vis = p
+                        .get("visualIdentity")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let id = service.create_workspace_full(parent, name, desc, root, vis)?;
+                    Ok(ManagementResponse {
+                        success: true,
+                        operation_id: op_id.clone(),
+                        id: Some(id.0.to_string()),
+                        version: Some(1),
+                        data: None,
+                        error: None,
+                        code: None,
+                    })
+                }
+                "desktop" => {
+                    let parent = req
+                        .parent_id
+                        .as_deref()
+                        .ok_or_else(|| Error::InvalidMetadata("missing parentId for desktop"))?
+                        .parse::<WorkspaceId>()?;
+                    let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let role = p.get("role").and_then(|v| v.as_str()).map(String::from);
+                    let vis = p
+                        .get("visualIdentity")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let id = service.create_desktop_full(parent, name, role, vis)?;
+                    Ok(ManagementResponse {
+                        success: true,
+                        operation_id: op_id.clone(),
+                        id: Some(id.0.to_string()),
+                        version: Some(1),
+                        data: None,
+                        error: None,
+                        code: None,
+                    })
+                }
+                _ => Err(Error::InvalidMetadata("unknown entity for create")),
+            }
+        }
+        "update" => {
+            let id_str = req
+                .id
+                .as_deref()
+                .ok_or_else(|| Error::InvalidMetadata("missing id for update"))?;
+            let p = req.payload.as_ref().unwrap_or(&serde_json::Value::Null);
+            match entity {
+                "world" => {
+                    let id = id_str.parse::<WorldId>()?;
+                    let name = p.get("name").and_then(|v| v.as_str()).map(String::from);
+                    let desc = p.get("description").map(|v| v.as_str().map(String::from));
+                    let vis = p
+                        .get("visualIdentity")
+                        .map(|v| v.as_str().map(String::from));
+                    let art = p.get("artwork").map(|v| v.as_str().map(String::from));
+                    service.update_world(
+                        id,
+                        WorldUpdate {
+                            name,
+                            description: desc,
+                            visual_identity: vis,
+                            artwork_identifier: art,
+                        },
+                        req.expected_version,
+                    )?;
+                    Ok(ManagementResponse {
+                        success: true,
+                        operation_id: op_id.clone(),
+                        id: Some(id_str.into()),
+                        version: req.expected_version.map(|v| v + 1),
+                        data: None,
+                        error: None,
+                        code: None,
+                    })
+                }
+                "workspace" => {
+                    let id = id_str.parse::<WorkspaceId>()?;
+                    let name = p.get("name").and_then(|v| v.as_str()).map(String::from);
+                    let desc = p.get("description").map(|v| v.as_str().map(String::from));
+                    let root = p.get("rootDirectory").map(|v| v.as_str().map(String::from));
+                    let vis = p
+                        .get("visualIdentity")
+                        .map(|v| v.as_str().map(String::from));
+                    service.update_workspace(
+                        id,
+                        WorkspaceUpdate {
+                            name,
+                            description: desc,
+                            root_directory: root,
+                            visual_identity: vis,
+                        },
+                        req.expected_version,
+                    )?;
+                    Ok(ManagementResponse {
+                        success: true,
+                        operation_id: op_id.clone(),
+                        id: Some(id_str.into()),
+                        version: req.expected_version.map(|v| v + 1),
+                        data: None,
+                        error: None,
+                        code: None,
+                    })
+                }
+                "desktop" => {
+                    let id = id_str.parse::<DesktopId>()?;
+                    let name = p.get("name").and_then(|v| v.as_str()).map(String::from);
+                    let role = p.get("role").map(|v| v.as_str().map(String::from));
+                    let vis = p
+                        .get("visualIdentity")
+                        .map(|v| v.as_str().map(String::from));
+                    service.update_desktop(
+                        id,
+                        DesktopUpdate {
+                            name,
+                            role,
+                            visual_identity: vis,
+                        },
+                        req.expected_version,
+                    )?;
+                    Ok(ManagementResponse {
+                        success: true,
+                        operation_id: op_id.clone(),
+                        id: Some(id_str.into()),
+                        version: req.expected_version.map(|v| v + 1),
+                        data: None,
+                        error: None,
+                        code: None,
+                    })
+                }
+                _ => Err(Error::InvalidMetadata("unknown entity for update")),
+            }
+        }
+        "reorder" => {
+            let p = req.payload.as_ref().unwrap_or(&serde_json::Value::Null);
+            let ids = p
+                .get("ids")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| Error::InvalidMetadata("missing ids array in reorder payload"))?;
+            match entity {
+                "world" => {
+                    let world_ids = ids
+                        .iter()
+                        .filter_map(|v| v.as_str()?.parse::<WorldId>().ok())
+                        .collect();
+                    service.reorder_worlds(world_ids)?;
+                    Ok(ManagementResponse {
+                        success: true,
+                        operation_id: op_id.clone(),
+                        id: None,
+                        version: None,
+                        data: None,
+                        error: None,
+                        code: None,
+                    })
+                }
+                "workspace" => {
+                    let parent = req
+                        .parent_id
+                        .as_deref()
+                        .ok_or_else(|| Error::InvalidMetadata("missing parentId"))?
+                        .parse::<WorldId>()?;
+                    let ws_ids = ids
+                        .iter()
+                        .filter_map(|v| v.as_str()?.parse::<WorkspaceId>().ok())
+                        .collect();
+                    service.reorder_workspaces(parent, ws_ids)?;
+                    Ok(ManagementResponse {
+                        success: true,
+                        operation_id: op_id.clone(),
+                        id: None,
+                        version: None,
+                        data: None,
+                        error: None,
+                        code: None,
+                    })
+                }
+                "desktop" => {
+                    let parent = req
+                        .parent_id
+                        .as_deref()
+                        .ok_or_else(|| Error::InvalidMetadata("missing parentId"))?
+                        .parse::<WorkspaceId>()?;
+                    let dt_ids = ids
+                        .iter()
+                        .filter_map(|v| v.as_str()?.parse::<DesktopId>().ok())
+                        .collect();
+                    service.reorder_desktops(parent, dt_ids)?;
+                    Ok(ManagementResponse {
+                        success: true,
+                        operation_id: op_id.clone(),
+                        id: None,
+                        version: None,
+                        data: None,
+                        error: None,
+                        code: None,
+                    })
+                }
+                _ => Err(Error::InvalidMetadata("unknown entity for reorder")),
+            }
+        }
+        "archive" => {
+            let id_str = req
+                .id
+                .as_deref()
+                .ok_or_else(|| Error::InvalidMetadata("missing id for archive"))?;
+            match entity {
+                "world" => {
+                    let id = id_str.parse::<WorldId>()?;
+                    service.archive_world(id, req.expected_version)?;
+                }
+                "workspace" => {
+                    let id = id_str.parse::<WorkspaceId>()?;
+                    service.archive_workspace(id, req.expected_version)?;
+                }
+                "desktop" => {
+                    let id = id_str.parse::<DesktopId>()?;
+                    service.archive_desktop(id, req.expected_version)?;
+                }
+                _ => return Err(Error::InvalidMetadata("unknown entity for archive")),
+            }
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: Some(id_str.into()),
+                version: req.expected_version.map(|v| v + 1),
+                data: None,
+                error: None,
+                code: None,
+            })
+        }
+        "restore" => {
+            let id_str = req
+                .id
+                .as_deref()
+                .ok_or_else(|| Error::InvalidMetadata("missing id for restore"))?;
+            match entity {
+                "world" => {
+                    let id = id_str.parse::<WorldId>()?;
+                    service.restore_world(id, req.expected_version)?;
+                }
+                "workspace" => {
+                    let id = id_str.parse::<WorkspaceId>()?;
+                    service.restore_workspace(id, req.expected_version)?;
+                }
+                "desktop" => {
+                    let id = id_str.parse::<DesktopId>()?;
+                    service.restore_desktop(id, req.expected_version)?;
+                }
+                _ => return Err(Error::InvalidMetadata("unknown entity for restore")),
+            }
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: Some(id_str.into()),
+                version: req.expected_version.map(|v| v + 1),
+                data: None,
+                error: None,
+                code: None,
+            })
+        }
+        "delete" => {
+            let id_str = req
+                .id
+                .as_deref()
+                .ok_or_else(|| Error::InvalidMetadata("missing id for delete"))?;
+            match entity {
+                "world" => {
+                    let id = id_str.parse::<WorldId>()?;
+                    service.delete_world(id)?;
+                }
+                "workspace" => {
+                    let id = id_str.parse::<WorkspaceId>()?;
+                    service.delete_workspace(id)?;
+                }
+                "desktop" => {
+                    let id = id_str.parse::<DesktopId>()?;
+                    service.delete_desktop(id)?;
+                }
+                _ => return Err(Error::InvalidMetadata("unknown entity for delete")),
+            }
+            Ok(ManagementResponse {
+                success: true,
+                operation_id: op_id.clone(),
+                id: Some(id_str.into()),
+                version: None,
+                data: None,
+                error: None,
+                code: None,
+            })
+        }
+        _ => Err(Error::InvalidMetadata("unknown management action")),
+    })();
+
+    match result {
+        Ok(resp) => {
+            json(resp)?;
+            Ok(true)
+        }
+        Err(err) => {
+            let code = match &err {
+                Error::Conflict { .. } => "conflict",
+                Error::ParentArchived(_) => "parent_archived",
+                Error::AlreadyArchived(_) => "already_archived",
+                Error::NotArchived(_) => "not_archived",
+                Error::InvalidProjectDirectory(_) => "invalid_project_directory",
+                Error::InvalidName => "invalid_name",
+                Error::InvalidMetadata(_) => "invalid_metadata",
+                Error::Missing(_) => "missing",
+                Error::Duplicate(_) => "duplicate",
+                Error::HasChildren(_) => "has_children",
+                Error::InvalidOrder => "invalid_order",
+                _ => "error",
+            };
+            let resp = ManagementResponse {
+                success: false,
+                operation_id: op_id,
+                id: req.id,
+                version: None,
+                data: None,
+                error: Some(err.to_string()),
+                code: Some(code.into()),
+            };
+            json(resp)?;
+            Err(err)
+        }
+    }
 }
 
 fn run_ui(cli: &Cli, command: &UiCommand) -> ExitCode {
@@ -494,7 +1374,12 @@ fn main() -> ExitCode {
                 | Error::Missing(_)
                 | Error::Duplicate(_)
                 | Error::HasChildren(_)
-                | Error::InvalidOrder => ExitCode::from(2),
+                | Error::InvalidOrder
+                | Error::InvalidProjectDirectory(_)
+                | Error::AlreadyArchived(_)
+                | Error::NotArchived(_)
+                | Error::ParentArchived(_) => ExitCode::from(2),
+                Error::Conflict { .. } => ExitCode::from(4),
                 _ => ExitCode::FAILURE,
             }
         }

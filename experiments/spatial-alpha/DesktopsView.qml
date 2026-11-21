@@ -66,29 +66,90 @@ LevelTransition {
                 detail: "Read-only application metadata for the selected desktop"
             }
 
-            Flow {
-                id: selector
-                width: parent.width
-                spacing: view.gap
-                readonly property int slots: Math.min(view.columns, Math.max(1, view.scene.currentDesktops.length))
+            Row {
+                spacing: 8
+                NeonButton {
+                    objectName: "createDesktopButton"
+                    text: "+ New Desktop"
+                    compact: true
+                    highlighted: true
+                    accent: NeonTheme.cyan
+                    onClicked: view.scene.openCreateDesktopDialog(view.scene.backend ? view.scene.backend.selectedWorkspaceId : "")
+                }
+                NeonButton {
+                    objectName: "editDesktopButton"
+                    text: "Edit Desktop"
+                    compact: true
+                    visible: !!view.desktop
+                    onClicked: view.scene.openEditDesktopDialog(view.desktop)
+                }
+            }
 
-                Repeater {
-                    model: view.scene.currentDesktops
-                    delegate: WorkspacePreview {
-                        required property var modelData
-                        required property int index
-                        objectName: "desktopTab-" + modelData.id
-                        workspace: modelData
-                        ordinal: index
-                        subtitle: Display.safeText(modelData.role)
-                        highlighted: view.scene.desktopIndex === index
-                        highContrast: view.scene.highContrast
-                        lowEffects: view.scene.lowEffects
-                        width: (selector.width - (selector.slots - 1) * selector.spacing) / selector.slots
-                        height: 67
-                        onClicked: {
-                            view.scene.selectDesktopIndex(index);
-                            view.scene.forceActiveFocus();
+            Item {
+                id: selectorContainer
+                width: parent.width
+                height: view.scene.currentDesktops.length <= 6 ? selectorFlow.implicitHeight : 67
+                clip: true
+
+                Flow {
+                    id: selectorFlow
+                    visible: view.scene.currentDesktops.length <= 6
+                    width: parent.width
+                    spacing: view.gap
+                    readonly property int slots: Math.min(view.columns, Math.max(1, view.scene.currentDesktops.length))
+
+                    Repeater {
+                        model: view.scene.currentDesktops.length <= 6 ? view.scene.currentDesktops : []
+                        delegate: WorkspacePreview {
+                            required property var modelData
+                            required property int index
+                            objectName: "desktopTab-" + modelData.id
+                            workspace: modelData
+                            ordinal: index
+                            subtitle: Display.safeText(modelData.role)
+                            highlighted: view.scene.desktopIndex === index
+                            highContrast: view.scene.highContrast
+                            lowEffects: view.scene.lowEffects
+                            width: (selectorFlow.width - (selectorFlow.slots - 1) * selectorFlow.spacing) / selectorFlow.slots
+                            height: 67
+                            onClicked: {
+                                view.scene.selectDesktopIndex(index);
+                                view.scene.forceActiveFocus();
+                            }
+                        }
+                    }
+                }
+
+                Flickable {
+                    id: selectorFlickable
+                    visible: view.scene.currentDesktops.length > 6
+                    anchors.fill: parent
+                    contentWidth: tabRow.width
+                    contentHeight: height
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    Row {
+                        id: tabRow
+                        spacing: view.gap
+                        Repeater {
+                            model: view.scene.currentDesktops.length > 6 ? view.scene.currentDesktops : []
+                            delegate: WorkspacePreview {
+                                required property var modelData
+                                required property int index
+                                objectName: "desktopTab-" + modelData.id
+                                workspace: modelData
+                                ordinal: index
+                                subtitle: Display.safeText(modelData.role)
+                                highlighted: view.scene.desktopIndex === index
+                                highContrast: view.scene.highContrast
+                                lowEffects: view.scene.lowEffects
+                                width: Math.max(160, Math.min(240, (selectorContainer.width - 2 * view.gap) / 3))
+                                height: 67
+                                onClicked: {
+                                    view.scene.selectDesktopIndex(index);
+                                    view.scene.forceActiveFocus();
+                                }
+                            }
                         }
                     }
                 }
@@ -168,26 +229,48 @@ LevelTransition {
 
                         Repeater {
                             model: windowModel
-                            delegate: WindowCard {
-                                id: windowCard
+                            delegate: Item {
+                                id: winSlot
                                 required property string recordId
                                 required property string recordJson
                                 required property int index
                                 objectName: "windowCard-" + recordId
                                 width: view.cardWidth
-                                window: JSON.parse(recordJson)
-                                demoSource: !!(view.scene.backend && (view.scene.backend.isDemo || view.scene.backend.mockMode))
-                                isSelected: view.scene.windowIndex === index
-                                isFocused: isSelected && view.activeLevel
-                                showTitles: view.scene.showTitles
-                                motionOff: view.motionOff
-                                lowEffects: view.scene.lowEffects
-                                highContrast: view.scene.highContrast
-                                pointerEnabled: view.activeLevel && !view.scene.navigationBlocked()
+                                height: 200
+                                readonly property bool inWindow: {
+                                    const total = windowModel.count;
+                                    if (total <= 24)
+                                        return true;
+                                    const curRow = Math.floor(view.scene.windowIndex / view.columns);
+                                    const myRow = Math.floor(index / view.columns);
+                                    return Math.abs(curRow - myRow) <= 3;
+                                }
 
-                                onChosen: {
-                                    view.scene.backend.selectWindow(recordId);
-                                    view.scene.forceActiveFocus();
+                                Loader {
+                                    anchors.fill: parent
+                                    active: winSlot.inWindow && (view.activeLevel || view.opacity > 0)
+                                    sourceComponent: WindowCard {
+                                        id: windowCard
+                                        readonly property string recordId: winSlot.recordId
+                                        readonly property string recordJson: winSlot.recordJson
+                                        readonly property int index: winSlot.index
+                                        objectName: "windowCard-" + recordId
+                                        width: winSlot.width
+                                        window: JSON.parse(recordJson)
+                                        demoSource: !!(view.scene.backend && (view.scene.backend.isDemo || view.scene.backend.mockMode))
+                                        isSelected: view.scene.windowIndex === index
+                                        isFocused: isSelected && view.activeLevel
+                                        showTitles: view.scene.showTitles
+                                        motionOff: view.motionOff
+                                        lowEffects: view.scene.lowEffects
+                                        highContrast: view.scene.highContrast
+                                        pointerEnabled: view.activeLevel && !view.scene.navigationBlocked()
+
+                                        onChosen: {
+                                            view.scene.backend.selectWindow(recordId);
+                                            view.scene.forceActiveFocus();
+                                        }
+                                    }
                                 }
                             }
                         }

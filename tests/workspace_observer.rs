@@ -104,6 +104,8 @@ async fn shared_application_reads_empty_and_populated_hierarchy_without_persisti
         [
             "desktop_association_rules",
             "desktops",
+            "operation_audit",
+            "preferences",
             "workspaces",
             "worlds"
         ]

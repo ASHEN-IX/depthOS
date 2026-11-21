@@ -1,0 +1,52 @@
+{
+  "timestamp": 1795268897.7312868,
+  "verdict": "PASS",
+  "tests": {
+    "cleanInit": {
+      "status": "PASS",
+      "schemaVersion": 3,
+      "journalMode": "delete"
+    },
+    "v1ToV3Migration": {
+      "status": "PASS",
+      "preMigrationVersion": 1,
+      "postMigrationVersion": 3,
+      "dataPreserved": true,
+      "integrity": [
+        "ok"
+      ]
+    },
+    "v2ToV3Migration": {
+      "status": "PASS",
+      "preMigrationVersion": 2,
+      "postMigrationVersion": 3,
+      "rulesPreserved": true
+    },
+    "concurrentWal": {
+      "status": "PASS",
+      "successfulReads": 324,
+      "successfulWrites": 113,
+      "errors": 0,
+      "integrity": [
+        "ok"
+      ]
+    },
+    "corruptionDetection": {
+      "status": "PASS",
+      "reportedState": "corrupt",
+      "cleanRefusal": true
+    },
+    "permissionEnforcement": {
+      "status": "PASS",
+      "unsafeDirRejected": true,
+      "exitCode": 3
+    },
+    "backupRecovery": {
+      "status": "PASS",
+      "roundtripIntegrity": [
+        "ok"
+      ],
+      "dataRestoredAccurately": true
+    }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "timestamp": 1795269583.036409,
+  "verdict": "PASS",
+  "results": {
+    "resolutions": {
+      "1920x1080": {
+        "status": "PASS",
+        "tag": "standard-desktop",
+        "width": 1920,
+        "height": 1080,
+        "artifact": "viewport-1920x1080.png",
+        "fileSizeBytes": 1576316
+      },
+      "1440x900": {
+        "status": "PASS",
+        "tag": "compact-laptop",
+        "width": 1440,
+        "height": 900,
+        "artifact": "viewport-1440x900.png",
+        "fileSizeBytes": 1128033
+      },
+      "1366x768": {
+        "status": "PASS",
+        "tag": "legacy-display",
+        "width": 1366,
+        "height": 768,
+        "artifact": "viewport-1366x768.png",
+        "fileSizeBytes": 959369
+      },
+      "1024x768": {
+        "status": "PASS",
+        "tag": "minimal-viewport",
+        "width": 1024,
+        "height": 768,
+        "artifact": "viewport-1024x768.png",
+        "fileSizeBytes": 459604
+      },
+      "630x470": {
+        "status": "PASS",
+        "tag": "panel-minimum",
+        "width": 630,
+        "height": 470,
+        "artifact": "viewport-630x470.png",
+        "fileSizeBytes": 199686
+      }
+    },
+    "keyboardNavigation": {
+      "status": "PASS",
+      "keysTested": [
+        "Return (drillDown)",
+        "Escape (drillUp)",
+        "L (carouselNext)",
+        "H (carouselPrev)",
+        "/ (searchPalette)",
+        "Escape (searchDismiss)"
+      ],
+      "allKeysResponsive": true
+    },
+    "accessibility": {
+      "status": "PASS",
+      "highContrastVerified": true,
+      "reducedMotionVerified": true,
+      "visualTokensConsistent": true
+    },
+    "visualArtifacts": [
+      "viewport-1920x1080.png",
+      "viewport-1440x900.png",
+      "viewport-1366x768.png",
+      "viewport-1024x768.png",
+      "viewport-630x470.png",
+      "high-contrast-mode.png",
+      "reduced-motion-mode.png"
+    ]
+  }
+}

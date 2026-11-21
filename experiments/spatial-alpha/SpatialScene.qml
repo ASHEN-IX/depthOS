@@ -163,12 +163,144 @@ Item {
     onCurrentDesktopsChanged: syncIndices()
     onCurrentWindowsChanged: syncIndices()
 
+    readonly property var hostBridge: scene.Window.window ? scene.Window.window.hostBridge : null
+
     function onboardingOpen() {
         return !!(scene.backend && scene.backend.onboardingState && scene.backend.onboardingState !== "hidden");
     }
 
     function navigationBlocked() {
-        return searchPalette.isOpen || controlCenter.isOpen || scene.onboardingOpen();
+        return searchPalette.isOpen || controlCenter.isOpen || scene.onboardingOpen()
+            || worldEditorDialog.isOpen || workspaceEditorDialog.isOpen || desktopEditorDialog.isOpen
+            || archiveConfirmationDialog.isOpen || archivedItemsView.isOpen || onboardingWizard.isOpen;
+    }
+
+    function savePreference(key, value) {
+        if (scene.hostBridge) {
+            scene.hostBridge.setPreference(key, value);
+        }
+    }
+
+    function openCreateWorldDialog() {
+        if (scene.navigationBlocked()) return;
+        scene.rememberModalFocus();
+        worldEditorDialog.mode = "create";
+        worldEditorDialog.worldId = "";
+        worldEditorDialog.initialName = "";
+        worldEditorDialog.initialDescription = "";
+        worldEditorDialog.initialVisualIdentity = "neon-cyan";
+        worldEditorDialog.initialArtwork = "cyber-grid";
+        worldEditorDialog.version = 1;
+        worldEditorDialog.isOpen = true;
+    }
+
+    function openEditWorldDialog(w) {
+        if (!w || scene.navigationBlocked()) return;
+        scene.rememberModalFocus();
+        worldEditorDialog.mode = "edit";
+        worldEditorDialog.worldId = w.id;
+        worldEditorDialog.initialName = w.name;
+        worldEditorDialog.initialDescription = w.description || "";
+        worldEditorDialog.initialVisualIdentity = w.visualIdentity || "neon-cyan";
+        worldEditorDialog.initialArtwork = w.artworkIdentifier || "cyber-grid";
+        worldEditorDialog.version = w.version || 1;
+        worldEditorDialog.isOpen = true;
+    }
+
+    function openCreateWorkspaceDialog(worldId) {
+        if (scene.navigationBlocked()) return;
+        scene.rememberModalFocus();
+        workspaceEditorDialog.mode = "create";
+        workspaceEditorDialog.worldId = worldId || (scene.backend ? scene.backend.selectedWorldId : "");
+        workspaceEditorDialog.workspaceId = "";
+        workspaceEditorDialog.initialName = "";
+        workspaceEditorDialog.initialDescription = "";
+        workspaceEditorDialog.initialRootDirectory = "";
+        workspaceEditorDialog.initialVisualIdentity = "neon-cyan";
+        workspaceEditorDialog.version = 1;
+        workspaceEditorDialog.isOpen = true;
+    }
+
+    function openEditWorkspaceDialog(ws) {
+        if (!ws || scene.navigationBlocked()) return;
+        scene.rememberModalFocus();
+        workspaceEditorDialog.mode = "edit";
+        workspaceEditorDialog.worldId = ws.worldId;
+        workspaceEditorDialog.workspaceId = ws.id;
+        workspaceEditorDialog.initialName = ws.name;
+        workspaceEditorDialog.initialDescription = ws.description || "";
+        workspaceEditorDialog.initialRootDirectory = ws.rootDirectory || "";
+        workspaceEditorDialog.initialVisualIdentity = ws.visualIdentity || "neon-cyan";
+        workspaceEditorDialog.version = ws.version || 1;
+        workspaceEditorDialog.isOpen = true;
+    }
+
+    function openCreateDesktopDialog(wsId) {
+        if (scene.navigationBlocked()) return;
+        scene.rememberModalFocus();
+        desktopEditorDialog.mode = "create";
+        desktopEditorDialog.workspaceId = wsId || (scene.backend ? scene.backend.selectedWorkspaceId : "");
+        desktopEditorDialog.desktopId = "";
+        desktopEditorDialog.initialName = "";
+        desktopEditorDialog.initialRole = "development";
+        desktopEditorDialog.initialVisualIdentity = "neon-cyan";
+        desktopEditorDialog.version = 1;
+        desktopEditorDialog.isOpen = true;
+    }
+
+    function openEditDesktopDialog(dt) {
+        if (!dt || scene.navigationBlocked()) return;
+        scene.rememberModalFocus();
+        desktopEditorDialog.mode = "edit";
+        desktopEditorDialog.workspaceId = dt.workspaceId;
+        desktopEditorDialog.desktopId = dt.id;
+        desktopEditorDialog.initialName = dt.name;
+        desktopEditorDialog.initialRole = dt.role || "";
+        desktopEditorDialog.initialVisualIdentity = dt.visualIdentity || "neon-cyan";
+        desktopEditorDialog.version = dt.version || 1;
+        desktopEditorDialog.isOpen = true;
+    }
+
+    function openArchiveConfirmation(entity, id, name, version, childCount) {
+        scene.rememberModalFocus();
+        archiveConfirmationDialog.entity = entity;
+        archiveConfirmationDialog.entityId = id;
+        archiveConfirmationDialog.entityName = name;
+        archiveConfirmationDialog.expectedVersion = version;
+        archiveConfirmationDialog.childCount = childCount || 0;
+        archiveConfirmationDialog.isOpen = true;
+    }
+
+    function openArchivedView() {
+        if (scene.navigationBlocked()) return;
+        scene.rememberModalFocus();
+        archivedItemsView.isOpen = true;
+    }
+
+    function openOnboardingWizard() {
+        if (scene.navigationBlocked()) return;
+        scene.rememberModalFocus();
+        onboardingWizard.isOpen = true;
+    }
+
+    function openCreateDialogForCurrentLevel() {
+        if (scene.currentLevel === 1) {
+            scene.openCreateWorldDialog();
+        } else if (scene.currentLevel === 2) {
+            scene.openCreateWorkspaceDialog(scene.backend ? scene.backend.selectedWorldId : "");
+        } else if (scene.currentLevel === 3) {
+            scene.openCreateDesktopDialog(scene.backend ? scene.backend.selectedWorkspaceId : "");
+        }
+    }
+
+    function openEditDialogForCurrentLevel() {
+        if (scene.currentLevel === 1) {
+            scene.openEditWorldDialog(scene.backend ? scene.backend.currentWorld : null);
+        } else if (scene.currentLevel === 2) {
+            scene.openEditWorkspaceDialog(scene.backend ? scene.backend.currentWorkspace : null);
+        } else if (scene.currentLevel === 3) {
+            scene.openEditDesktopDialog(scene.backend ? scene.backend.currentDesktop : null);
+        }
     }
 
     function setLevel(next) {
@@ -333,6 +465,11 @@ Item {
                 return null;
             if (node.objectName === name)
                 return node;
+            if (node.item) {
+                const foundItem = walk(node.item);
+                if (foundItem)
+                    return foundItem;
+            }
             const kids = node.children;
             for (let i = 0; i < kids.length; ++i) {
                 const found = walk(kids[i]);
@@ -358,7 +495,19 @@ Item {
         }
         let targetIndex = -1;
         let targetZ = -Infinity;
-        for (let i = 0; i < list.length; ++i) {
+        let minIdx = 0;
+        let maxIdx = list.length - 1;
+        if (scene.currentLevel === 1) {
+            minIdx = Math.max(0, scene.worldIndex - 4);
+            maxIdx = Math.min(list.length - 1, scene.worldIndex + 4);
+        } else if (scene.currentLevel === 2 && list.length > 36) {
+            minIdx = Math.max(0, scene.workspaceIndex - 18);
+            maxIdx = Math.min(list.length - 1, scene.workspaceIndex + 18);
+        } else if (scene.currentLevel === 3 && list.length > 24) {
+            minIdx = Math.max(0, scene.windowIndex - 18);
+            maxIdx = Math.min(list.length - 1, scene.windowIndex + 18);
+        }
+        for (let i = minIdx; i <= maxIdx; ++i) {
             const card = scene.findNamed(prefix + list[i].id);
             if (!card || !card.visible || card.available === false || card.z < targetZ)
                 continue;
@@ -720,6 +869,15 @@ Item {
                 scene.selectDesktopIndex(scene.desktopIndex + 1);
             }
             event.accepted = true;
+        } else if (event.key === Qt.Key_C || (event.key === Qt.Key_N && (event.modifiers & Qt.ControlModifier))) {
+            scene.openCreateDialogForCurrentLevel();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_E) {
+            scene.openEditDialogForCurrentLevel();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_A) {
+            scene.openArchivedView();
+            event.accepted = true;
         }
     }
 
@@ -1002,6 +1160,17 @@ Item {
                         accent: NeonTheme.emerald
                         onClicked: scene.backend.dismissOnboarding()
                     }
+
+                    NeonButton {
+                        objectName: "openWizardButton"
+                        text: "Custom Setup Wizard"
+                        visible: {
+                            const state = scene.backend ? scene.backend.onboardingState : "";
+                            return state === "offer" || state === "error";
+                        }
+                        compact: true
+                        onClicked: scene.openOnboardingWizard()
+                    }
                 }
             }
         }
@@ -1041,6 +1210,192 @@ Item {
             controlCenter.isOpen = false;
             scene.restoreModalFocus();
         }
+    }
+
+    WorldEditorDialog {
+        id: worldEditorDialog
+        objectName: "worldEditorDialog"
+        anchors.fill: parent
+        z: 105
+        hostBridge: scene.hostBridge
+        motionOff: scene.motionOff
+        onSaved: data => {
+            statusIndicator.showSuccess("World saved successfully");
+            scene.restoreModalFocus();
+        }
+        onArchiveRequested: (id, name, ver) => {
+            const count = scene.currentWorkspaces.length;
+            scene.openArchiveConfirmation("world", id, name, ver, count);
+        }
+        onReorderRequested: (id, delta) => {
+            if (!scene.hostBridge) return;
+            const idx = scene.currentWorlds.findIndex(w => w.id === id);
+            if (idx < 0) return;
+            const target = idx + delta;
+            if (target < 0 || target >= scene.currentWorlds.length) return;
+            const ids = scene.currentWorlds.map(w => w.id);
+            const tmp = ids[idx];
+            ids[idx] = ids[target];
+            ids[target] = tmp;
+            const req = { action: "reorder", entity: "world", payload: { ids: ids } };
+            scene.hostBridge.executeManagement(JSON.stringify(req));
+            statusIndicator.showSuccess("World order updated");
+        }
+        onDismissed: scene.restoreModalFocus()
+    }
+
+    WorkspaceEditorDialog {
+        id: workspaceEditorDialog
+        objectName: "workspaceEditorDialog"
+        anchors.fill: parent
+        z: 105
+        hostBridge: scene.hostBridge
+        motionOff: scene.motionOff
+        onSaved: data => {
+            statusIndicator.showSuccess("Workspace saved successfully");
+            scene.restoreModalFocus();
+        }
+        onArchiveRequested: (id, name, ver) => {
+            const count = scene.backend ? scene.backend.getDesktopsForWorkspace(id).length : 0;
+            scene.openArchiveConfirmation("workspace", id, name, ver, count);
+        }
+        onReorderRequested: (id, delta) => {
+            if (!scene.hostBridge) return;
+            const idx = scene.currentWorkspaces.findIndex(w => w.id === id);
+            if (idx < 0) return;
+            const target = idx + delta;
+            if (target < 0 || target >= scene.currentWorkspaces.length) return;
+            const ids = scene.currentWorkspaces.map(w => w.id);
+            const tmp = ids[idx];
+            ids[idx] = ids[target];
+            ids[target] = tmp;
+            const req = {
+                action: "reorder",
+                entity: "workspace",
+                parentId: scene.backend.selectedWorldId,
+                payload: { ids: ids }
+            };
+            scene.hostBridge.executeManagement(JSON.stringify(req));
+            statusIndicator.showSuccess("Workspace order updated");
+        }
+        onDismissed: scene.restoreModalFocus()
+    }
+
+    DesktopEditorDialog {
+        id: desktopEditorDialog
+        objectName: "desktopEditorDialog"
+        anchors.fill: parent
+        z: 105
+        hostBridge: scene.hostBridge
+        motionOff: scene.motionOff
+        onSaved: data => {
+            statusIndicator.showSuccess("Desktop saved successfully");
+            scene.restoreModalFocus();
+        }
+        onArchiveRequested: (id, name, ver) => {
+            scene.openArchiveConfirmation("desktop", id, name, ver, 0);
+        }
+        onReorderRequested: (id, delta) => {
+            if (!scene.hostBridge) return;
+            const idx = scene.currentDesktops.findIndex(d => d.id === id);
+            if (idx < 0) return;
+            const target = idx + delta;
+            if (target < 0 || target >= scene.currentDesktops.length) return;
+            const ids = scene.currentDesktops.map(d => d.id);
+            const tmp = ids[idx];
+            ids[idx] = ids[target];
+            ids[target] = tmp;
+            const req = {
+                action: "reorder",
+                entity: "desktop",
+                parentId: scene.backend.selectedWorkspaceId,
+                payload: { ids: ids }
+            };
+            scene.hostBridge.executeManagement(JSON.stringify(req));
+            statusIndicator.showSuccess("Desktop order updated");
+        }
+        onDismissed: scene.restoreModalFocus()
+    }
+
+    ArchiveConfirmationDialog {
+        id: archiveConfirmationDialog
+        objectName: "archiveConfirmationDialog"
+        anchors.fill: parent
+        z: 110
+        hostBridge: scene.hostBridge
+        motionOff: scene.motionOff
+        onConfirmed: (entity, id, ver) => {
+            if (!scene.hostBridge) return;
+            const req = {
+                action: "archive",
+                entity: entity,
+                id: id,
+                expectedVersion: ver
+            };
+            try {
+                const respRaw = scene.hostBridge.executeManagement(JSON.stringify(req));
+                const resp = JSON.parse(respRaw);
+                if (resp.success) {
+                    statusIndicator.showSuccess("Archived " + entity + " safely");
+                } else if (resp.code === "conflict") {
+                    statusIndicator.showConflict("Conflict: Item was modified concurrently.", () => {
+                        scene.hostBridge.reloadHierarchy();
+                    });
+                } else {
+                    statusIndicator.showError("Archive failed: " + (resp.error || "unknown error"));
+                }
+            } catch (err) {
+                statusIndicator.showError("Archive failed: " + err);
+            }
+            scene.restoreModalFocus();
+        }
+        onDismissed: scene.restoreModalFocus()
+    }
+
+    ArchivedItemsView {
+        id: archivedItemsView
+        objectName: "archivedItemsView"
+        anchors.fill: parent
+        z: 108
+        hostBridge: scene.hostBridge
+        motionOff: scene.motionOff
+        onItemRestored: (kind, id) => {
+            statusIndicator.showSuccess("Restored " + kind + " successfully");
+        }
+        onDismissed: scene.restoreModalFocus()
+    }
+
+    OnboardingWizard {
+        id: onboardingWizard
+        objectName: "onboardingWizard"
+        anchors.fill: parent
+        z: 115
+        hostBridge: scene.hostBridge
+        motionOff: scene.motionOff
+        onCompleted: {
+            onboardingWizard.isOpen = false;
+            scene.backend.dismissOnboarding();
+            statusIndicator.showSuccess("Workspace initialized!");
+            scene.restoreModalFocus();
+        }
+        onQuickSetupRequested: {
+            onboardingWizard.isOpen = false;
+            scene.backend.requestCreateWorkspace();
+        }
+        onDemoModeRequested: {
+            onboardingWizard.isOpen = false;
+            scene.backend.requestContinueDemo();
+        }
+    }
+
+    OperationStatusIndicator {
+        id: statusIndicator
+        objectName: "statusIndicator"
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 30
+        z: 120
+        motionOff: scene.motionOff
     }
 
     // One wheel area consumes both axes in the same event. Button presses

@@ -39,6 +39,25 @@ LevelTransition {
                 detail: Display.countLabel(view.scene.currentWorkspaces.length, "workspace", "workspaces") + " in this world"
             }
 
+            Row {
+                spacing: 8
+                NeonButton {
+                    objectName: "createWorkspaceButton"
+                    text: "+ New Workspace"
+                    compact: true
+                    highlighted: true
+                    accent: NeonTheme.cyan
+                    onClicked: view.scene.openCreateWorkspaceDialog(view.scene.backend ? view.scene.backend.selectedWorldId : "")
+                }
+                NeonButton {
+                    objectName: "editWorkspaceButton"
+                    text: "Edit Workspace"
+                    compact: true
+                    visible: !!view.activeWorkspace
+                    onClicked: view.scene.openEditWorkspaceDialog(view.activeWorkspace)
+                }
+            }
+
             Rectangle {
                 width: parent.width
                 height: view.height < 570 ? 74 : 135
@@ -103,58 +122,78 @@ LevelTransition {
 
                 Repeater {
                     model: view.scene.currentWorkspaces
-                    delegate: WorkspaceCard {
-                        id: workspaceCard
+                    delegate: Item {
+                        id: slot
                         required property var modelData
                         required property int index
-                        objectName: "workspaceCard-" + modelData.id
                         width: view.cardWidth
-                        workspace: modelData
-                        ordinal: index
-                        desktops: view.scene.backend ? view.scene.backend.getDesktopsForWorkspace(modelData.id) : []
-                        demoSource: view.scene.backend && view.scene.backend.isDemo
-                        observedWindowCount: {
-                            const b = view.scene.backend;
-                            if (!b || (!b.isDemo && !b.observerLive))
-                                return -1;
-                            const count = desktops.reduce((sum, d) => sum + b.getWindowsForDesktop(d.id).length, 0);
-                            return b.isDemo || count > 0 ? count : -1;
+                        height: 224
+                        readonly property bool inWindow: {
+                            const total = view.scene.currentWorkspaces.length;
+                            if (total <= 36)
+                                return true;
+                            const curRow = Math.floor(view.scene.workspaceIndex / view.columns);
+                            const myRow = Math.floor(index / view.columns);
+                            return Math.abs(curRow - myRow) <= 3;
                         }
-                        freshness: {
-                            const b = view.scene.backend;
-                            if (demoSource)
-                                return "Sample hierarchy";
-                            if (modelData.updatedAt)
-                                return "Workspace updated " + Display.safeText(modelData.updatedAt);
-                            if (b && b.sourceLoadedAt)
-                                return "Hierarchy read " + Display.safeText(b.sourceLoadedAt);
-                            return "";
-                        }
-                        statusBadge: view.scene.workspaceSourceBadge()
-                        isSelected: view.scene.workspaceIndex === index
-                        isFocused: isSelected && view.activeLevel
-                        motionOff: view.motionOff
-                        lowEffects: view.scene.lowEffects
-                        highContrast: view.scene.highContrast
-                        pointerEnabled: view.activeLevel && !view.scene.navigationBlocked()
-                        scale: isFocused ? 1.025 : 1
-                        z: isFocused ? 1 : 0
 
-                        Behavior on scale {
-                            NumberAnimation {
-                                duration: NeonTheme.ms(workspaceCard.motionOff, NeonTheme.hoverMs)
-                                easing.type: NeonTheme.easing
+                        Loader {
+                            anchors.fill: parent
+                            active: slot.inWindow && (view.activeLevel || view.opacity > 0)
+                            sourceComponent: WorkspaceCard {
+                                id: workspaceCard
+                                readonly property var modelData: slot.modelData
+                                readonly property int index: slot.index
+                                objectName: "workspaceCard-" + modelData.id
+                                width: slot.width
+                                workspace: modelData
+                                ordinal: index
+                                desktops: view.scene.backend ? view.scene.backend.getDesktopsForWorkspace(modelData.id) : []
+                                demoSource: view.scene.backend && view.scene.backend.isDemo
+                                observedWindowCount: {
+                                    const b = view.scene.backend;
+                                    if (!b || (!b.isDemo && !b.observerLive))
+                                        return -1;
+                                    const count = desktops.reduce((sum, d) => sum + b.getWindowsForDesktop(d.id).length, 0);
+                                    return b.isDemo || count > 0 ? count : -1;
+                                }
+                                freshness: {
+                                    const b = view.scene.backend;
+                                    if (demoSource)
+                                        return "Sample hierarchy";
+                                    if (modelData.updatedAt)
+                                        return "Workspace updated " + Display.safeText(modelData.updatedAt);
+                                    if (b && b.sourceLoadedAt)
+                                        return "Hierarchy read " + Display.safeText(b.sourceLoadedAt);
+                                    return "";
+                                }
+                                statusBadge: view.scene.workspaceSourceBadge()
+                                isSelected: view.scene.workspaceIndex === index
+                                isFocused: isSelected && view.activeLevel
+                                motionOff: view.motionOff
+                                lowEffects: view.scene.lowEffects
+                                highContrast: view.scene.highContrast
+                                pointerEnabled: view.activeLevel && !view.scene.navigationBlocked()
+                                scale: isFocused ? 1.025 : 1
+                                z: isFocused ? 1 : 0
+
+                                Behavior on scale {
+                                    NumberAnimation {
+                                        duration: NeonTheme.ms(workspaceCard.motionOff, NeonTheme.hoverMs)
+                                        easing.type: NeonTheme.easing
+                                    }
+                                }
+
+                                onChosen: {
+                                    view.scene.backend.selectWorkspace(modelData.id);
+                                    view.scene.forceActiveFocus();
+                                }
+                                onActivated: {
+                                    view.scene.backend.selectWorkspace(modelData.id);
+                                    view.scene.forceActiveFocus();
+                                    view.scene.pointerDrillDown();
+                                }
                             }
-                        }
-
-                        onChosen: {
-                            view.scene.backend.selectWorkspace(modelData.id);
-                            view.scene.forceActiveFocus();
-                        }
-                        onActivated: {
-                            view.scene.backend.selectWorkspace(modelData.id);
-                            view.scene.forceActiveFocus();
-                            view.scene.pointerDrillDown();
                         }
                     }
                 }

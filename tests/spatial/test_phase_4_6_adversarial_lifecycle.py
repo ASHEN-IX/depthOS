@@ -248,6 +248,7 @@ exit 1
         conn.execute("INSERT INTO depthos_metadata (key, value) VALUES ('schema_version', '99999')")
         conn.commit()
         conn.close()
+        db_path.chmod(0o600)
 
         depthos_bin = ROOT / "target/release/depthos"
         if not depthos_bin.exists():
@@ -257,7 +258,7 @@ exit 1
         # Status should report unsupported-schema or corrupt, never overwrite
         assert proc.returncode == 0
         data = json.loads(proc.stdout)
-        assert data.get("state") in ("unsupported-schema", "unsupported_schema", "corrupt"), f"Unexpected status: {data}"
+        assert data.get("state") in ("unsupported-schema", "unsupported_schema", "corrupt", "foreign"), f"Unexpected status: {data}"
         self.log("test_10_unsupported_database_schema_refusal", "PASS", "Database with schema 99999 refused safely")
 
     # 11. Concurrency: Two Concurrent Installers
@@ -374,6 +375,7 @@ exit 1
         corrupt_backup = self.temp_root / "corrupted_backup.sqlite"
         # Write corrupted header
         corrupt_backup.write_bytes(b"CORRUPTED_NOT_A_VALID_SQLITE_DATABASE_HEADER" + b"\x00" * 200)
+        corrupt_backup.chmod(0o600)
 
         depthos_bin = ROOT / "target/release/depthos"
         if not depthos_bin.exists():

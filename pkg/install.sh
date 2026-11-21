@@ -60,15 +60,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Case A: Inside repository tree
 if [[ -d "$SCRIPT_DIR/../experiments/spatial-alpha" && -d "$SCRIPT_DIR/../migrations" ]]; then
     ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-    DEPTHOS_SRC="$ROOT_DIR/target/release/depthos"
-    if [[ ! -f "$DEPTHOS_SRC" ]]; then
-        DEPTHOS_SRC="$ROOT_DIR/target/debug/depthos"
+    if [[ -z "${DEPTHOS_SRC:-}" ]]; then
+        DEPTHOS_SRC="$ROOT_DIR/target/release/depthos"
+        if [[ ! -f "$DEPTHOS_SRC" ]]; then
+            DEPTHOS_SRC="$ROOT_DIR/target/debug/depthos"
+        fi
     fi
-    LAUNCHER_SRC="$ROOT_DIR/tools/depthos-spatial-alpha"
-    SPATIAL_SRC="$ROOT_DIR/experiments/spatial-alpha"
-    MIGRATIONS_SRC="$ROOT_DIR/migrations"
-    DESKTOP_SRC="$ROOT_DIR/pkg/depthos.desktop"
-    ICON_SRC="$ROOT_DIR/pkg/depthos.svg"
+    LAUNCHER_SRC="${LAUNCHER_SRC:-$ROOT_DIR/tools/depthos-spatial-alpha}"
+    SPATIAL_SRC="${SPATIAL_SRC:-$ROOT_DIR/experiments/spatial-alpha}"
+    MIGRATIONS_SRC="${MIGRATIONS_SRC:-$ROOT_DIR/migrations}"
+    DESKTOP_SRC="${DESKTOP_SRC:-$ROOT_DIR/pkg/depthos.desktop}"
+    ICON_SRC="${ICON_SRC:-$ROOT_DIR/pkg/depthos.svg}"
 # Case B: Inside extracted release archive
 elif [[ -f "$SCRIPT_DIR/bin/depthos" || -f "$SCRIPT_DIR/../bin/depthos" ]]; then
     if [[ -f "$SCRIPT_DIR/bin/depthos" ]]; then
@@ -76,13 +78,13 @@ elif [[ -f "$SCRIPT_DIR/bin/depthos" || -f "$SCRIPT_DIR/../bin/depthos" ]]; then
     else
         PKG_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
     fi
-    DEPTHOS_SRC="$PKG_ROOT/bin/depthos"
-    LAUNCHER_SRC="$PKG_ROOT/bin/depthos-spatial-alpha"
-    SPATIAL_SRC="$PKG_ROOT/share/depthos/spatial-alpha"
-    MIGRATIONS_SRC="$PKG_ROOT/share/depthos/migrations"
-    DESKTOP_SRC="$PKG_ROOT/pkg/depthos.desktop"
+    DEPTHOS_SRC="${DEPTHOS_SRC:-$PKG_ROOT/bin/depthos}"
+    LAUNCHER_SRC="${LAUNCHER_SRC:-$PKG_ROOT/bin/depthos-spatial-alpha}"
+    SPATIAL_SRC="${SPATIAL_SRC:-$PKG_ROOT/share/depthos/spatial-alpha}"
+    MIGRATIONS_SRC="${MIGRATIONS_SRC:-$PKG_ROOT/share/depthos/migrations}"
+    DESKTOP_SRC="${DESKTOP_SRC:-$PKG_ROOT/pkg/depthos.desktop}"
     [[ -f "$DESKTOP_SRC" ]] || DESKTOP_SRC="$PKG_ROOT/depthos.desktop"
-    ICON_SRC="$PKG_ROOT/pkg/depthos.svg"
+    ICON_SRC="${ICON_SRC:-$PKG_ROOT/pkg/depthos.svg}"
     [[ -f "$ICON_SRC" ]] || ICON_SRC="$PKG_ROOT/depthos.svg"
 else
     echo "ERROR: Unable to locate DepthOS source artifacts from $SCRIPT_DIR" >&2

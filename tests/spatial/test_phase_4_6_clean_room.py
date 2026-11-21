@@ -97,7 +97,7 @@ class CleanRoomTestRunner:
         self.prefix.mkdir(parents=True, exist_ok=True, mode=0o755)
         self.work_dir = self.temp_dir / "scratch"
         self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
-        self.db_path = self.temp_dir / "cleanroom_workspace.sqlite"
+        self.db_path = self.prefix / "share/depthos/workspaces.sqlite3"
         self.env = sanitize_environment(self.prefix)
         self.results = {}
         self.screenshots = []

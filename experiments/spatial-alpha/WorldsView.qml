@@ -123,13 +123,34 @@ LevelTransition {
         }
     }
 
+    readonly property var visibleWorldSlots: {
+        const worlds = view.scene.currentWorlds;
+        if (!worlds || worlds.length === 0)
+            return [];
+        if (worlds.length <= 9)
+            return worlds.map((w, idx) => ({ world: w, worldIndex: idx }));
+        const center = Math.round(view.scene.carouselIndex);
+        const radius = view.peripheral + 2;
+        const start = Math.max(0, center - radius);
+        const end = Math.min(worlds.length - 1, center + radius);
+        const slots = [];
+        for (let i = start; i <= end; ++i) {
+            slots.push({
+                world: worlds[i],
+                worldIndex: i
+            });
+        }
+        return slots;
+    }
+
     Repeater {
-        model: view.scene.currentWorlds
+        model: view.visibleWorldSlots
         delegate: Loader {
             id: slot
             required property var modelData
-            required property int index
-            readonly property int distance: Math.abs(index - view.scene.carouselIndex)
+            readonly property int itemWorldIndex: modelData.worldIndex
+            readonly property var itemWorld: modelData.world
+            readonly property int distance: Math.abs(itemWorldIndex - view.scene.carouselIndex)
             active: (view.activeLevel || view.opacity > 0) && distance <= view.peripheral + 1
             width: view.cardWidth * (!view.wide || distance === 0 ? 1 : distance === 1 ? 0.79 : 0.74)
             height: view.cardHeight
@@ -137,8 +158,8 @@ LevelTransition {
 
             sourceComponent: WorldCard {
                 id: worldCard
-                readonly property int index: slot.index
-                readonly property var modelData: slot.modelData
+                readonly property int index: slot.itemWorldIndex
+                readonly property var modelData: slot.itemWorld
                 readonly property int offset: index - view.scene.carouselIndex
                 readonly property int depth: Math.abs(offset)
                 readonly property real arc: Math.sign(offset) * (depth === 0 ? 0 : 1 + (Math.min(depth, 5) - 1) * (view.wide ? 0.63 : 0.53))

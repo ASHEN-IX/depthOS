@@ -490,7 +490,19 @@ Item {
         }
         let targetIndex = -1;
         let targetZ = -Infinity;
-        for (let i = 0; i < list.length; ++i) {
+        let minIdx = 0;
+        let maxIdx = list.length - 1;
+        if (scene.currentLevel === 1) {
+            minIdx = Math.max(0, scene.worldIndex - 4);
+            maxIdx = Math.min(list.length - 1, scene.worldIndex + 4);
+        } else if (scene.currentLevel === 2 && list.length > 36) {
+            minIdx = Math.max(0, scene.workspaceIndex - 18);
+            maxIdx = Math.min(list.length - 1, scene.workspaceIndex + 18);
+        } else if (scene.currentLevel === 3 && list.length > 24) {
+            minIdx = Math.max(0, scene.windowIndex - 18);
+            maxIdx = Math.min(list.length - 1, scene.windowIndex + 18);
+        }
+        for (let i = minIdx; i <= maxIdx; ++i) {
             const card = scene.findNamed(prefix + list[i].id);
             if (!card || !card.visible || card.available === false || card.z < targetZ)
                 continue;

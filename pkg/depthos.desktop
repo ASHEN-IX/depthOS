@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DepthOS Spatial Workspace
+GenericName=Spatial Workspace Organizer
+Comment=Privacy-conscious spatial workspace and logical desktop organizer
+Exec=depthos-spatial-alpha
+Icon=depthos
+Terminal=false
+Categories=Utility;X-DesktopUtility;
+Keywords=workspace;virtual desktop;spatial;organizer;depthos;
+StartupWMClass=depthos-spatial-alpha

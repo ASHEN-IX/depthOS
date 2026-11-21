@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -27,11 +28,53 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-QML_FILE = ROOT / "experiments/spatial-alpha/main.qml"
 DEPTHOS = None
 CONTROLLER_SERVICE = "org.depthos.Controller"
 CONTROLLER_PATH = "/org/depthos/Controller"
 CONTROLLER_INTERFACE = "org.depthos.Controller1"
+
+
+def discover_qml_file():
+    """Locate the main.qml file for DepthOS Spatial Alpha.
+    Order:
+      1. DEPTHOS_QML_FILE or DEPTHOS_QML_DIR / main.qml
+      2. Sibling prefix: <prefix>/share/depthos/spatial-alpha/main.qml
+      3. XDG_DATA_HOME / depthos/spatial-alpha/main.qml
+      4. XDG_DATA_DIRS entries / depthos/spatial-alpha/main.qml
+      5. Development fallback: ROOT / experiments/spatial-alpha/main.qml
+    """
+    candidates = []
+
+    if os.environ.get("DEPTHOS_QML_FILE"):
+        candidates.append(Path(os.environ["DEPTHOS_QML_FILE"]))
+    if os.environ.get("DEPTHOS_QML_DIR"):
+        candidates.append(Path(os.environ["DEPTHOS_QML_DIR"]) / "main.qml")
+
+    script_dir = Path(__file__).resolve().parent
+    prefix = script_dir.parent
+    candidates.append(prefix / "share" / "depthos" / "spatial-alpha" / "main.qml")
+
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    if xdg_data_home:
+        candidates.append(Path(xdg_data_home) / "depthos" / "spatial-alpha" / "main.qml")
+    else:
+        candidates.append(Path.home() / ".local" / "share" / "depthos" / "spatial-alpha" / "main.qml")
+
+    xdg_data_dirs = os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
+    for d in xdg_data_dirs.split(":"):
+        d_str = d.strip()
+        if d_str:
+            candidates.append(Path(d_str) / "depthos" / "spatial-alpha" / "main.qml")
+
+    candidates.append(ROOT / "experiments" / "spatial-alpha" / "main.qml")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    return candidates[-1]
+
+
+QML_FILE = discover_qml_file()
 
 
 def date_label(timestamp_ms=None):
@@ -55,22 +98,41 @@ BLOCKED_DB_STATES = {
 
 
 def depthos_executable():
-    """Locate the depthos binary without touching a database."""
+    """Locate the depthos binary without touching a database.
+    Order:
+      1. Explicit global DEPTHOS / CLI override
+      2. DEPTHOS_BIN env var
+      3. Sibling binary in the same directory: <prefix>/bin/depthos
+      4. System PATH: shutil.which("depthos")
+      5. Development fallback: ROOT/target/release/depthos, ROOT/target/debug/depthos, CARGO_TARGET_DIR
+    """
     candidates = []
     if DEPTHOS:
         candidates.append(Path(DEPTHOS))
     env_bin = os.environ.get("DEPTHOS_BIN")
     if env_bin:
         candidates.append(Path(env_bin))
+
+    # Sibling binary: e.g. <prefix>/bin/depthos when launcher is <prefix>/bin/depthos-spatial-alpha
+    sibling = Path(__file__).resolve().parent / "depthos"
+    candidates.append(sibling)
+
+    # PATH lookup
+    path_bin = shutil.which("depthos")
+    if path_bin:
+        candidates.append(Path(path_bin))
+
+    # Development repository fallback
     cargo = os.environ.get("CARGO_TARGET_DIR")
     if cargo:
-        candidates.append(Path(cargo) / "debug" / "depthos")
         candidates.append(Path(cargo) / "release" / "depthos")
-    candidates.append(ROOT / "target" / "debug" / "depthos")
+        candidates.append(Path(cargo) / "debug" / "depthos")
     candidates.append(ROOT / "target" / "release" / "depthos")
+    candidates.append(ROOT / "target" / "debug" / "depthos")
+
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
+            return candidate.resolve()
     return None
 
 
@@ -539,11 +601,14 @@ def main():
         engine.addImageProvider("world-art", ArtworkProvider(QQuickImageProvider.ImageType.Image))
 
 
-    if not QML_FILE.exists():
-        sys.stderr.write(f"depthos-spatial-alpha: QML file not found: {QML_FILE}\n")
+    qml_file = discover_qml_file()
+    if not qml_file.exists():
+        sys.stderr.write(f"depthos-spatial-alpha: QML file not found: {qml_file}\n")
         sys.exit(1)
 
-    engine.load(QUrl.fromLocalFile(str(QML_FILE)))
+    qml_dir = qml_file.parent
+    engine.addImportPath(str(qml_dir))
+    engine.load(QUrl.fromLocalFile(str(qml_file)))
 
     if not engine.rootObjects():
         sys.stderr.write("depthos-spatial-alpha: Failed to load QML root object\n")

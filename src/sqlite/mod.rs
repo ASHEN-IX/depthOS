@@ -1285,7 +1285,7 @@ impl Store for SqliteStore {
         let worlds_stmt = "SELECT id, name, description, archived_at_ms, version,
                 (SELECT count(*) FROM workspaces WHERE world_id=worlds.id)
              FROM worlds WHERE is_archived = 1 ORDER BY archived_at_ms DESC";
-        let mut stmt = tx.prepare(worlds_stmt)?;
+        let mut stmt = tx.prepare_cached(worlds_stmt)?;
         let world_rows = stmt.query_map([], |r| {
             let id: Uuid = r.get(0)?;
             Ok(ArchivedItem {
@@ -1307,7 +1307,7 @@ impl Store for SqliteStore {
         let ws_stmt = "SELECT id, world_id, name, description, archived_at_ms, version,
                 (SELECT count(*) FROM desktops WHERE workspace_id=workspaces.id)
              FROM workspaces WHERE is_archived = 1 ORDER BY archived_at_ms DESC";
-        let mut stmt = tx.prepare(ws_stmt)?;
+        let mut stmt = tx.prepare_cached(ws_stmt)?;
         let ws_rows = stmt.query_map([], |r| {
             let id: Uuid = r.get(0)?;
             let parent_id: Uuid = r.get(1)?;
@@ -1329,7 +1329,7 @@ impl Store for SqliteStore {
 
         let d_stmt = "SELECT id, workspace_id, name, role, archived_at_ms, version
              FROM desktops WHERE is_archived = 1 ORDER BY archived_at_ms DESC";
-        let mut stmt = tx.prepare(d_stmt)?;
+        let mut stmt = tx.prepare_cached(d_stmt)?;
         let d_rows = stmt.query_map([], |r| {
             let id: Uuid = r.get(0)?;
             let parent_id: Uuid = r.get(1)?;
@@ -1381,7 +1381,7 @@ impl Store for SqliteStore {
             tx.commit()?;
             return Ok(Vec::new());
         }
-        let mut stmt = tx.prepare("SELECT key, value FROM preferences ORDER BY key")?;
+        let mut stmt = tx.prepare_cached("SELECT key, value FROM preferences ORDER BY key")?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
         let mut list = Vec::new();
         for item in rows {

@@ -74,11 +74,22 @@ def depthos_executable():
     return None
 
 
-def run_depthos(args):
+def run_depthos(args, timeout=10.0):
     exe = depthos_executable()
     if exe is None:
         return None
-    return subprocess.run([str(exe), *args], capture_output=True, text=True)
+    try:
+        return subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args, returncode=124, stdout="",
+            stderr=f"depthos command timed out after {timeout} seconds",
+        )
+    except Exception as exc:
+        return subprocess.CompletedProcess(
+            args, returncode=1, stdout="",
+            stderr=str(exc),
+        )
 
 
 def status_json(db_path):
@@ -611,6 +622,34 @@ def main():
 
         @pyqtSlot(str, result=str)
         def executeManagement(self, req_json):
+            if not req_json or len(req_json.encode("utf-8")) > 1048576:
+                return json.dumps({
+                    "success": False,
+                    "error": "Management request payload exceeds 1 MiB limit or is empty",
+                    "code": "invalid_payload"
+                })
+
+            try:
+                req_obj = json.loads(req_json)
+                action = req_obj.get("action", "")
+            except Exception as e:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Invalid JSON payload: {e}",
+                    "code": "malformed_json"
+                })
+
+            allowed_actions = {
+                "create", "update", "reorder", "archive", "restore",
+                "delete", "inspectProject", "getPreferences", "setPreferences"
+            }
+            if action not in allowed_actions:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Disallowed action '{action}'. Permitted actions: {sorted(allowed_actions)}",
+                    "code": "invalid_action"
+                })
+
             if self.be.property("isDemo"):
                 return self._execute_mock_management(req_json)
 
@@ -622,12 +661,19 @@ def main():
                     "code": "no_database"
                 })
 
-            proc = run_depthos(["--db", str(path), "manage", "exec", "--request", req_json])
+            proc = run_depthos(["--db", str(path), "manage", "exec", "--request", req_json], timeout=10.0)
             if proc is None:
                 return json.dumps({
                     "success": False,
                     "error": "depthos executable not found",
                     "code": "missing_binary"
+                })
+
+            if proc.returncode == 124:
+                return json.dumps({
+                    "success": False,
+                    "error": proc.stderr.strip() or "Operation timed out",
+                    "code": "timeout"
                 })
 
             stdout = proc.stdout.strip()
@@ -642,8 +688,6 @@ def main():
 
             if resp.get("success"):
                 try:
-                    req = json.loads(req_json)
-                    action = req.get("action", "")
                     if action in ("create", "update", "reorder", "archive", "restore", "delete"):
                         load_from_db_path(path, self.be)
                         if self.sc:

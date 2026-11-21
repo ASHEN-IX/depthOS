@@ -19,6 +19,8 @@ ALTER TABLE desktops ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS worlds_archived ON worlds (is_archived, sort_order, id);
 CREATE INDEX IF NOT EXISTS workspaces_archived ON workspaces (world_id, is_archived, sort_order, id);
 CREATE INDEX IF NOT EXISTS desktops_archived ON desktops (workspace_id, is_archived, sort_order, id);
+CREATE INDEX IF NOT EXISTS workspaces_archived_at ON workspaces (archived_at_ms DESC) WHERE is_archived = 1;
+CREATE INDEX IF NOT EXISTS desktops_archived_at ON desktops (archived_at_ms DESC) WHERE is_archived = 1;
 
 CREATE TABLE IF NOT EXISTS preferences (
     key TEXT NOT NULL PRIMARY KEY CHECK (length(key) BETWEEN 1 AND 80),

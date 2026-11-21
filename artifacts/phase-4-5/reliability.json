@@ -1,0 +1,68 @@
+{
+  "timestamp": 1795269476.1112158,
+  "verdict": "PASS",
+  "metrics": {
+    "soakCycles": 0,
+    "burstEventsTotal": 160,
+    "burstRounds": [
+      {
+        "round": 1,
+        "events": 40,
+        "durationMs": 2.85,
+        "queueDepth": 0
+      },
+      {
+        "round": 2,
+        "events": 40,
+        "durationMs": 2.61,
+        "queueDepth": 0
+      },
+      {
+        "round": 3,
+        "events": 40,
+        "durationMs": 2.66,
+        "queueDepth": 0
+      },
+      {
+        "round": 4,
+        "events": 40,
+        "durationMs": 2.76,
+        "queueDepth": 0
+      }
+    ],
+    "reconnectSuccess": true,
+    "corruptedMessagesDiscarded": 4,
+    "idleCpuPercent": {
+      "ui": 0.67,
+      "controller": 0.33
+    },
+    "memoryTrajectory": {
+      "start": {
+        "VmHWM": 131004,
+        "Rss": 131008,
+        "Pss": 83751,
+        "Private_Dirty": 57476
+      },
+      "post_burst": {
+        "VmHWM": 135396,
+        "Rss": 135396,
+        "Pss": 88139,
+        "Private_Dirty": 61864
+      },
+      "post_reconnect": {
+        "VmHWM": 141196,
+        "Rss": 141196,
+        "Pss": 93939,
+        "Private_Dirty": 67600
+      },
+      "end": {
+        "VmHWM": 141200,
+        "Rss": 141200,
+        "Pss": 93935,
+        "Private_Dirty": 67604
+      }
+    },
+    "queueHighWater": 0,
+    "rssNetGrowthKiB": 5804
+  }
+}

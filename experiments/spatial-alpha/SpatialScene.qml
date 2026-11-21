@@ -465,6 +465,11 @@ Item {
                 return null;
             if (node.objectName === name)
                 return node;
+            if (node.item) {
+                const foundItem = walk(node.item);
+                if (foundItem)
+                    return foundItem;
+            }
             const kids = node.children;
             for (let i = 0; i < kids.length; ++i) {
                 const found = walk(kids[i]);

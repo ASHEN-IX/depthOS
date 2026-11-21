@@ -234,6 +234,7 @@ LevelTransition {
                                 required property string recordId
                                 required property string recordJson
                                 required property int index
+                                objectName: "windowCard-" + recordId
                                 width: view.cardWidth
                                 height: 200
                                 readonly property bool inWindow: {

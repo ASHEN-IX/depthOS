@@ -1,0 +1,79 @@
+{
+  "totalCycles": 100,
+  "initialMemory": {
+    "rssKiB": 51936,
+    "pssKiB": 26008,
+    "privateDirtyKiB": 17240,
+    "vmHwmKiB": 51936
+  },
+  "finalMemory": {
+    "rssKiB": 148144,
+    "pssKiB": 97299,
+    "privateDirtyKiB": 74740,
+    "vmHwmKiB": 150048
+  },
+  "snapshots": [
+    {
+      "cycle": 0,
+      "stage": "initial",
+      "rssKiB": 51936,
+      "pssKiB": 26008,
+      "privateDirtyKiB": 17240,
+      "vmHwmKiB": 51936
+    },
+    {
+      "cycle": 1,
+      "stage": "cycle_1",
+      "rssKiB": 141688,
+      "pssKiB": 90847,
+      "privateDirtyKiB": 68348,
+      "vmHwmKiB": 141688
+    },
+    {
+      "cycle": 10,
+      "stage": "cycle_10",
+      "rssKiB": 147192,
+      "pssKiB": 96347,
+      "privateDirtyKiB": 73788,
+      "vmHwmKiB": 147192
+    },
+    {
+      "cycle": 25,
+      "stage": "cycle_25",
+      "rssKiB": 148524,
+      "pssKiB": 97679,
+      "privateDirtyKiB": 75120,
+      "vmHwmKiB": 148524
+    },
+    {
+      "cycle": 50,
+      "stage": "cycle_50",
+      "rssKiB": 149528,
+      "pssKiB": 98683,
+      "privateDirtyKiB": 76124,
+      "vmHwmKiB": 149528
+    },
+    {
+      "cycle": 75,
+      "stage": "cycle_75",
+      "rssKiB": 149532,
+      "pssKiB": 98685,
+      "privateDirtyKiB": 76128,
+      "vmHwmKiB": 150048
+    },
+    {
+      "cycle": 100,
+      "stage": "cycle_100",
+      "rssKiB": 148488,
+      "pssKiB": 97643,
+      "privateDirtyKiB": 75084,
+      "vmHwmKiB": 150048
+    }
+  ],
+  "growthFromCycle25To100KiB": {
+    "rss": -36,
+    "pss": -36
+  },
+  "stabilized": true,
+  "verdict": "PASS"
+}

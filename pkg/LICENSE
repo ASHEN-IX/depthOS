@@ -1,0 +1,30 @@
+DepthOS Private Alpha Evaluation Agreement
+
+Copyright (c) 2026 DepthOS Contributors. All rights reserved.
+
+1. Grant of License:
+Subject to the terms and conditions of this Agreement, the DepthOS project grants
+authorized private alpha testers a non-exclusive, non-transferable, revocable license
+to install and execute the DepthOS binaries and companion spatial environment solely
+for internal testing and evaluation purposes.
+
+2. Security and Observation Constraints:
+- Native authorization mechanisms in this alpha distribution remain strictly DENY-ONLY.
+- Native system observation hooks operate strictly READ-ONLY.
+- Any attempt to bypass, subvert, or reconfigure authorization boundaries is prohibited.
+
+3. Reservation of Rights:
+Except for the limited evaluation rights expressly granted herein, all right, title,
+and interest in and to DepthOS, including all intellectual property rights, remain with
+the DepthOS project maintainers. Redistribution, public mirroring, or commercial deployment
+without written consent is strictly prohibited.
+
+4. Third-Party Components:
+DepthOS incorporates third-party open-source components governed by their respective
+licenses as documented in NOTICES.md. Nothing in this Agreement restricts or overrides
+rights granted under applicable open-source licenses for those third-party components.
+
+5. Disclaimer of Warranty:
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES,
+OR OTHER LIABILITY ARISING FROM THE USE OF THIS ALPHA RELEASE.
